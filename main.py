@@ -404,235 +404,14 @@ def _render_vgz(filepath: str, volume: float = 0.5, max_duration: int = 120) -> 
 
 
 # ---------------------------------------------------------------------------
-# OPL2-style FM synthesis music
+# VGZ/VGM music loader (returns None if no valid file or ymfm-py unavailable)
 # ---------------------------------------------------------------------------
-# Uses 2-operator FM synthesis (carrier + modulator) to produce a retro
-# OPL2/AdLib-style background music loop. Everything is generated in code.
-
-NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-
-def note_to_freq(name: str, octave: int) -> float:
-    """Convert note name (e.g. 'A', 'C#') and octave number to frequency in Hz (A4=440)."""
-    semitones = NOTE_NAMES.index(name.upper()) + (octave - 4) * 12 - 9
-    return 440.0 * (2 ** (semitones / 12.0))
-
-
-def fm_note_samples(freq: float, duration: float, sr: int = 22050, ratio: float = 1.0,
-                    index: float = 1.0, amp: float = 0.3, attack: float = 0.005,
-                    decay: float = 0.1, sustain: float = 0.7, release: float = 0.05) -> list[int]:
-    """
-    Generate 2-operator FM synthesis samples for one note (OPL2 style).
-
-    Parameters:
-        freq: carrier frequency (note pitch) in Hz
-        duration: note length in seconds
-        sr: sample rate
-        ratio: modulator_freq / carrier_freq  (OPL2 multiplier: 0.5, 1, 2, 3, 4...)
-        index: modulation index (higher = brighter/more metallic)
-        amp: amplitude (0-1)
-        attack/decay/sustain/release: ADSR envelope in seconds
-    """
-    n = int(sr * duration)
-    if n <= 0:
-        return []
-    samples = []
-    attack_s = int(sr * attack)
-    decay_s = int(sr * decay)
-    release_s = int(sr * release)
-    sustain_start = attack_s + decay_s
-    release_start = n - release_s
-
-    for i in range(n):
-        # ADSR envelope
-        if i < attack_s:
-            env = i / max(attack_s, 1)
-        elif i < sustain_start:
-            env = 1.0 - (1.0 - sustain) * (i - attack_s) / max(decay_s, 1)
-        elif i < release_start:
-            env = sustain
-        else:
-            env = sustain * (1.0 - (i - release_start) / max(release_s, 1))
-
-        # FM: sin(2π*fc*t + I * sin(2π*fm*t))
-        t = i / sr
-        phase_c = 2 * math.pi * freq * t
-        phase_m = 2 * math.pi * freq * ratio * t
-        val = math.sin(phase_c + index * math.sin(phase_m))
-        samples.append(int(16000 * env * val * amp))
-
-    return samples
-
-
-def generate_music_loop(bpm: int = 140, sr: int = 22050) -> list[int]:
-    """
-    Generate an OPL2-style background music loop.
-    Returns a list of 16-bit integer samples (mono).
-
-    Composition: heroic/adventure theme in A minor.
-    8-bar loop, 4/4 time, 32 beats total.
-    """
-    beat = 60.0 / bpm  # seconds per beat
-
-    # Instrument presets (OPL2-style 2-op FM patches)
-    # Each defines (ratio, index, amp, attack, decay, sustain, release)
-    patches = {
-        'bass':   {'ratio': 0.5, 'index': 4.0, 'amp': 0.28,
-                   'attack': 0.005, 'decay': 0.12, 'sustain': 0.2, 'release': 0.04},
-        'pad':    {'ratio': 1.0, 'index': 1.5, 'amp': 0.14,
-                   'attack': 0.04, 'decay': 0.2, 'sustain': 0.8, 'release': 0.08},
-        'lead':   {'ratio': 2.0, 'index': 3.0, 'amp': 0.18,
-                   'attack': 0.01, 'decay': 0.1, 'sustain': 0.7, 'release': 0.05},
-        'arp':    {'ratio': 1.0, 'index': 2.0, 'amp': 0.10,
-                   'attack': 0.005, 'decay': 0.08, 'sustain': 0.3, 'release': 0.03},
-    }
-
-    # --- Compose the song ---
-    # Each entry: (patch_name, note_name, octave, start_beat, duration_beats)
-    total_beats = 32  # 8 bars
-    total_dur = total_beats * beat
-    total_samples = int(sr * total_dur)
-
-    # Bass line: roots on beat 1 & 3 (half notes, staccato)
-    bass = [
-        # Bar 1-2: Am vamp
-        ('bass', 'A', 2, 0, 0.9), ('bass', 'A', 2, 1, 0.9),
-        ('bass', 'E', 2, 2, 0.9), ('bass', 'E', 2, 3, 0.9),
-        ('bass', 'F', 2, 4, 0.9), ('bass', 'F', 2, 5, 0.9),
-        ('bass', 'E', 2, 6, 0.9), ('bass', 'E', 2, 7, 0.9),
-        # Bar 3-4: Dm → Am → G → Bdim walk-up
-        ('bass', 'D', 2, 8, 0.9), ('bass', 'D', 2, 9, 0.9),
-        ('bass', 'A', 2, 10, 0.9), ('bass', 'A', 2, 11, 0.9),
-        ('bass', 'C', 2, 12, 0.9), ('bass', 'C', 2, 13, 0.9),
-        ('bass', 'B', 2, 14, 0.9), ('bass', 'B', 2, 15, 0.9),
-    ]
-
-    # Pad chords: sustained triads (2 beats each)
-    pad = [
-        # Am vamp
-        ('pad', 'A', 3, 0, 4.0),
-        ('pad', 'E', 3, 4, 4.0),
-        # Dm → Am → G → Em
-        ('pad', 'D', 3, 8, 2.0),
-        ('pad', 'A', 3, 10, 2.0),
-        ('pad', 'G', 3, 12, 2.0),
-        ('pad', 'E', 3, 14, 2.0),
-        # Repeat with F → G
-        ('pad', 'A', 3, 16, 2.0),
-        ('pad', 'C', 3, 18, 2.0),
-        ('pad', 'F', 3, 20, 2.0),
-        ('pad', 'G', 3, 22, 2.0),
-        # Dm → F → E → Am
-        ('pad', 'D', 3, 24, 2.0),
-        ('pad', 'F', 3, 26, 2.0),
-        ('pad', 'E', 3, 28, 2.0),
-        ('pad', 'A', 3, 30, 2.0),
-    ]
-
-    # Lead melody: eighth & quarter notes
-    lead = [
-        # Phrase 1 (2 bars)
-        ('lead', 'A', 4, 0, 0.4), ('lead', 'C', 5, 0.5, 0.4),
-        ('lead', 'E', 5, 1.0, 0.4), ('lead', 'A', 5, 1.5, 0.4),
-        ('lead', 'E', 5, 2.0, 0.4), ('lead', 'C', 5, 2.5, 0.4),
-        ('lead', 'A', 4, 3.0, 0.4), ('lead', 'E', 4, 3.5, 0.4),
-        # Phrase 2 (2 bars)
-        ('lead', 'A', 4, 4.0, 0.4), ('lead', 'C', 5, 4.5, 0.4),
-        ('lead', 'E', 5, 5.0, 0.4), ('lead', 'G', 5, 5.5, 0.4),
-        ('lead', 'F', 5, 6.0, 0.6), ('lead', 'E', 5, 6.75, 0.6),
-        ('lead', 'D', 5, 7.5, 0.4),
-        # Phrase 3 (2 bars)
-        ('lead', 'A', 4, 8.0, 0.4), ('lead', 'C', 5, 8.5, 0.4),
-        ('lead', 'E', 5, 9.0, 0.4), ('lead', 'A', 5, 9.5, 0.4),
-        ('lead', 'G', 5, 10.0, 0.4), ('lead', 'F', 5, 10.5, 0.4),
-        ('lead', 'E', 5, 11.0, 0.4), ('lead', 'D', 5, 11.5, 0.4),
-        # Phrase 4 (2 bars)
-        ('lead', 'C', 5, 12.0, 0.4), ('lead', 'E', 5, 12.5, 0.4),
-        ('lead', 'G', 5, 13.0, 0.4), ('lead', 'B', 5, 13.5, 0.4),
-        ('lead', 'A', 5, 14.0, 0.6), ('lead', 'G', 5, 14.75, 0.6),
-        ('lead', 'E', 5, 15.5, 0.4),
-        # Phrase 5-8: repeat (loop)
-        ('lead', 'A', 4, 16, 0.4), ('lead', 'C', 5, 16.5, 0.4),
-        ('lead', 'E', 5, 17.0, 0.4), ('lead', 'A', 5, 17.5, 0.4),
-        ('lead', 'E', 5, 18.0, 0.4), ('lead', 'C', 5, 18.5, 0.4),
-        ('lead', 'A', 4, 19.0, 0.4), ('lead', 'E', 4, 19.5, 0.4),
-        ('lead', 'A', 4, 20.0, 0.4), ('lead', 'C', 5, 20.5, 0.4),
-        ('lead', 'E', 5, 21.0, 0.4), ('lead', 'G', 5, 21.5, 0.4),
-        ('lead', 'F', 5, 22.0, 0.6), ('lead', 'E', 5, 22.75, 0.6),
-        ('lead', 'D', 5, 23.5, 0.4),
-        ('lead', 'A', 4, 24.0, 0.4), ('lead', 'C', 5, 24.5, 0.4),
-        ('lead', 'E', 5, 25.0, 0.4), ('lead', 'A', 5, 25.5, 0.4),
-        ('lead', 'G', 5, 26.0, 0.4), ('lead', 'F', 5, 26.5, 0.4),
-        ('lead', 'E', 5, 27.0, 0.4), ('lead', 'D', 5, 27.5, 0.4),
-        ('lead', 'C', 5, 28.0, 0.4), ('lead', 'E', 5, 28.5, 0.4),
-        ('lead', 'G', 5, 29.0, 0.4), ('lead', 'B', 5, 29.5, 0.4),
-        ('lead', 'A', 5, 30.0, 0.6), ('lead', 'G', 5, 30.75, 0.6),
-        ('lead', 'E', 5, 31.5, 0.4),
-    ]
-
-    # Arpeggio: rapid chord tones (adds energy)
-    arp = [
-        ('arp', 'A', 4, 0, 0.2), ('arp', 'C', 5, 0.2, 0.2),
-        ('arp', 'E', 5, 0.4, 0.2), ('arp', 'A', 5, 0.6, 0.2),
-        ('arp', 'A', 4, 1.0, 0.2), ('arp', 'C', 5, 1.2, 0.2),
-        ('arp', 'E', 5, 1.4, 0.2), ('arp', 'A', 5, 1.6, 0.2),
-        ('arp', 'G', 4, 2.0, 0.2), ('arp', 'B', 4, 2.2, 0.2),
-        ('arp', 'D', 5, 2.4, 0.2), ('arp', 'G', 5, 2.6, 0.2),
-        ('arp', 'E', 4, 3.0, 0.2), ('arp', 'G', 4, 3.2, 0.2),
-        ('arp', 'B', 4, 3.4, 0.2), ('arp', 'E', 5, 3.6, 0.2),
-        # Continue through other bars
-        ('arp', 'D', 4, 4.0, 0.2), ('arp', 'F', 4, 4.2, 0.2),
-        ('arp', 'A', 4, 4.4, 0.2), ('arp', 'D', 5, 4.6, 0.2),
-        ('arp', 'C', 4, 5.0, 0.2), ('arp', 'E', 4, 5.2, 0.2),
-        ('arp', 'G', 4, 5.4, 0.2), ('arp', 'C', 5, 5.6, 0.2),
-        ('arp', 'B', 3, 6.0, 0.2), ('arp', 'D', 4, 6.2, 0.2),
-        ('arp', 'F', 4, 6.4, 0.2), ('arp', 'B', 4, 6.6, 0.2),
-        ('arp', 'A', 3, 7.0, 0.2), ('arp', 'C', 4, 7.2, 0.2),
-        ('arp', 'E', 4, 7.4, 0.2), ('arp', 'A', 4, 7.6, 0.2),
-    ]
-
-    # Mix all parts into the sample buffer
-    mixed = [0.0] * total_samples
-
-    def render_part(part_list):
-        for patch_name, note_name, octave, start_beat, dur_beats in part_list:
-            p = patches[patch_name]
-            freq = note_to_freq(note_name, octave)
-            note_dur = dur_beats * beat
-            start_sample = int(start_beat * beat * sr)
-            samples = fm_note_samples(
-                freq, note_dur, sr,
-                ratio=p['ratio'], index=p['index'], amp=p['amp'],
-                attack=p['attack'], decay=p['decay'],
-                sustain=p['sustain'], release=p['release']
-            )
-            for i, s in enumerate(samples):
-                idx = start_sample + i
-                if idx < total_samples:
-                    mixed[idx] += s
-
-    render_part(bass)
-    render_part(pad)
-    render_part(lead)
-    render_part(arp)
-
-    # Normalize to 16-bit range, preventing clipping
-    max_val = max(abs(s) for s in mixed) if mixed else 1
-    scale = 28000.0 / max(max_val, 1)
-    result = [int(s * scale) for s in mixed]
-    return result
-
-
-def _generate_fallback_music() -> pygame.mixer.Sound | None:
-    """Generate OPL2-style background music (fallback if VGZ unavailable)."""
-    samples = generate_music_loop(bpm=140, sr=44100)
-    snd = _make_sound(samples, 44100, 0.4)
-    return snd
-
 def init_music() -> pygame.mixer.Sound | None:
-    """Try to load VGZ/VGM music from tunes/ directory, fall back to generated FM."""
+    """Try to load VGZ/VGM music from tunes/ directory.
+    Returns a pygame.mixer.Sound or None if no playable file is found.
+    """
     tunes_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tunes')
     if os.path.isdir(tunes_dir):
-        # Search for .vgz and .vgm files
         for ext in ('*.vgz', '*.vgm'):
             pattern = os.path.join(tunes_dir, ext)
             for path in sorted(glob.glob(pattern)):
@@ -642,9 +421,8 @@ def init_music() -> pygame.mixer.Sound | None:
                     print(f"  Successfully loaded ({snd.get_length():.1f}s)")
                     return snd
                 print(f"  Failed, trying next...")
-
-    print("No VGZ/VGM files found, using generated FM music")
-    return _generate_fallback_music()
+    print("No playable VGZ/VGM music found — game will play without background music")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1355,10 +1133,11 @@ class Game:
         # Sounds
         self.sounds = init_sounds()
 
-        # VGZ/VGM background music (fallback to generated FM)
+        # VGZ/VGM background music (may be None if no playable file found)
         self.music = init_music()
-        self.music.play(-1)  # start immediately on title screen
-        self.music_playing = True
+        if self.music:
+            self.music.play(-1)  # start immediately on title screen
+        self.music_playing = bool(self.music)
 
         # Decoration trees
         self.tree_positions = self._generate_trees()
@@ -1483,13 +1262,15 @@ class Game:
                 elif self.state in (GameState.VICTORY, GameState.GAME_OVER):
                     if event.key == pygame.K_SPACE:
                         self.state = GameState.TITLE
-                        self.music.stop()
+                        if self.music:
+                            self.music.stop()
                         self.music_playing = False
                         for s in self.sounds.values():
                             s.stop()
                         # Restart background music for title screen (no engine drone on title)
-                        self.music.play(-1)
-                        self.music_playing = True
+                        if self.music:
+                            self.music.play(-1)
+                        self.music_playing = bool(self.music)
 
         return True
 
@@ -1597,7 +1378,8 @@ class Game:
         # --- Check helicopter death ---
         if not heli.alive:
             self.state = GameState.GAME_OVER
-            self.music.stop()
+            if self.music:
+                self.music.stop()
             self.music_playing = False
             self.sounds['engine'].stop()
             self._spawn_explosion(heli.x, heli.y)
@@ -1616,7 +1398,8 @@ class Game:
                     civ.state = 'rescued'
                 self.score += 500
                 self.state = GameState.VICTORY
-                self.music.stop()
+                if self.music:
+                    self.music.stop()
                 self.music_playing = False
                 self.sounds['engine'].stop()
                 self.sounds['victory'].play()
