@@ -1,11 +1,11 @@
 """
-Heli Rescue — 8-bit side-scrolling helicopter rescue game
+Heli Rescue -- 8-bit side-scrolling helicopter rescue game
 
 Controls:
-  W A S D  — Move helicopter
-  SPACE    — Shoot (bullets go upward)
-  M        — Drop bomb (falls straight down)
-  SPACE    — Start / Restart
+  W A S D  -- Move helicopter
+  SPACE    -- Shoot (bullets go upward)
+  M        -- Drop bomb (falls straight down)
+  SPACE    -- Start / Restart
 
 Objective:
   Pick up all civilians, return to base, avoid enemy guns.
@@ -231,14 +231,14 @@ def init_sounds() -> dict[str, pygame.mixer.Sound]:
     sounds = {}
     sr = 44100
 
-    # Engine hum — low square wave (looping, started when entering PLAYING state)
+    # Engine hum -- low square wave (looping, started when entering PLAYING state)
     eng = _square_wave(80, 200, sr)
     sounds['engine'] = _make_sound(eng, sr, 0.04)
 
-    # Shoot — short noise
+    # Shoot -- short noise
     sounds['shoot'] = _make_sound(_white_noise(40, sr), sr, 0.15)
 
-    # Bomb drop — descending tone
+    # Bomb drop -- descending tone
     bomb_s = []
     for i in range(int(sr * 200 / 1000)):
         t = i / sr
@@ -247,10 +247,10 @@ def init_sounds() -> dict[str, pygame.mixer.Sound]:
         bomb_s.append(val)
     sounds['bomb_drop'] = _make_sound(bomb_s, sr, 0.2)
 
-    # Explosion — white noise burst
+    # Explosion -- white noise burst
     sounds['explosion'] = _make_sound(_white_noise(200, sr), sr, 0.3)
 
-    # Civilian pickup — ascending beep
+    # Civilian pickup -- ascending beep
     pickup_s = []
     for i in range(int(sr * 120 / 1000)):
         t = i / sr
@@ -259,7 +259,7 @@ def init_sounds() -> dict[str, pygame.mixer.Sound]:
         pickup_s.append(val)
     sounds['pickup'] = _make_sound(pickup_s, sr, 0.2)
 
-    # Damage — low buzz
+    # Damage -- low buzz
     sounds['damage'] = _make_sound(_square_wave(80, 150, sr), sr, 0.2)
 
     # Victory jingle
@@ -453,7 +453,7 @@ def init_music() -> pygame.mixer.Sound | None:
                     print(f"  Successfully loaded ({snd.get_length():.1f}s)")
                     return snd
                 print(f"  Failed, trying next...")
-    print("No playable VGZ/VGM music found — game will play without background music")
+    print("No playable VGZ/VGM music found -- game will play without background music")
     return None
 
 
@@ -519,7 +519,7 @@ def make_enemy_gun_surface() -> pygame.Surface:
 
 
 def make_bullet_surface() -> pygame.Surface:
-    """4×8 pixel yellow bullet sprite (player projectile)."""
+    """4x8 pixel yellow bullet sprite (player projectile)."""
     surf = pygame.Surface((4, 8), pygame.SRCALPHA)
     pygame.draw.rect(surf, YELLOW, (0, 0, 4, 8))
     pygame.draw.rect(surf, ORANGE, (1, 1, 2, 6))
@@ -527,7 +527,7 @@ def make_bullet_surface() -> pygame.Surface:
 
 
 def make_enemy_bullet_surface() -> pygame.Surface:
-    """6×6 pixel red/yellow bullet sprite (enemy projectile)."""
+    """6x6 pixel red/yellow bullet sprite (enemy projectile)."""
     surf = pygame.Surface((6, 6), pygame.SRCALPHA)
     pygame.draw.circle(surf, RED, (3, 3), 3)
     pygame.draw.circle(surf, YELLOW, (3, 3), 1)
@@ -535,7 +535,7 @@ def make_enemy_bullet_surface() -> pygame.Surface:
 
 
 def make_bomb_surface() -> pygame.Surface:
-    """8×12 pixel bomb sprite with fins."""
+    """8x12 pixel bomb sprite with fins."""
     surf = pygame.Surface((8, 12), pygame.SRCALPHA)
     pygame.draw.ellipse(surf, DARK_GRAY, (0, 2, 8, 10))
     pygame.draw.rect(surf, GRAY, (2, 0, 4, 3))
@@ -843,9 +843,9 @@ class Helicopter:
         Firepower scales with rescued civilians:
             num_bullets = 1 + (passengers // 2), clamped to [1, 5].
 
-        When num_bullets == 1, fires a single center bullet (vx=vy=10, 45° down-right).
+        When num_bullets == 1, fires a single center bullet (vx=vy=10, 45-degree down-right).
         When num_bullets > 1, fires a symmetric fan spread across FIRE_SPREAD_DEG degrees
-        centered on 45° down-right. Each bullet gets its own (vx, vy) via trig so that
+        centered on 45-degree down-right. Each bullet gets its own (vx, vy) via trig so that
         all bullets travel at the same speed but different trajectories.
 
         Returns:
@@ -863,7 +863,7 @@ class Helicopter:
 
         spread = math.radians(FIRE_SPREAD_DEG)
         step = spread / (num - 1)
-        base_angle = math.pi / 4  # 45° down-right
+        base_angle = math.pi / 4  # 45-degree down-right
         start = base_angle - spread / 2
         # Speed magnitude matching the current vx=vy=10 baseline
         mag = math.sqrt(BULLET_SPEED * BULLET_SPEED * 2)
@@ -939,7 +939,7 @@ class Bullet:
         """Initialise bullet at world position (x, y) with given velocity.
 
         If vx or vy is None, defaults to BULLET_SPEED (10), giving the
-        standard 45° down-right trajectory for single bullets.
+        standard 45-degree down-right trajectory for single bullets.
 
         Args:
             x: World x position (pixels).
@@ -973,7 +973,7 @@ class Bullet:
 
     @property
     def rect(self) -> pygame.Rect:
-        """4×8 collision rectangle at the bullet's current position."""
+        """4x8 collision rectangle at the bullet's current position."""
         return pygame.Rect(self.x - 2, self.y, 4, 8)
 
 
@@ -1030,7 +1030,7 @@ class EnemyBullet:
 
     @property
     def rect(self) -> pygame.Rect:
-        """6×6 collision square centred on the bullet."""
+        """6x6 collision square centred on the bullet."""
         return pygame.Rect(self.x - 3, self.y - 3, 6, 6)
 
 
@@ -1085,15 +1085,15 @@ class Bomb:
 
     @property
     def rect(self) -> pygame.Rect:
-        """8×12 collision rectangle at the bomb's current position."""
+        """8x12 collision rectangle at the bomb's current position."""
         return pygame.Rect(self.x - 4, self.y, 8, 12)
 
 
 class Explosion:
-    """Animated explosion effect: expanding circle that fades through YELLOW→ORANGE→RED.
+    """Animated explosion effect: expanding circle that fades through YELLOW->ORANGE->RED.
 
     Each frame of the animation is drawn from a pre-rendered frame list.
-    Each frame is shown for 3 ticks, so total duration = len(frames) × 3.
+    Each frame is shown for 3 ticks, so total duration = len(frames) x 3.
     """
 
     def __init__(self, x: float, y: float, frames: list[pygame.Surface]):
@@ -1133,11 +1133,11 @@ class Civilian:
     """A civilian on the ground that can be rescued.
 
     State machine:
-        waiting → running → boarding → onboard → rescued
+        waiting -> running -> boarding -> onboard -> rescued
 
     - waiting:  Standing still, watching for a grounded heli nearby.
     - running:  Moving toward the grounded helicopter at CIVILIAN_RUN_SPEED.
-    - boarding: Reached the helicopter — triggers onboard.
+    - boarding: Reached the helicopter -- triggers onboard.
     - onboard:  Passenger inside the helicopter (hidden from world).
     - rescued:  Final state after victory (HUD counts these).
 
@@ -1157,7 +1157,7 @@ class Civilian:
         self.x = x
         self.y = ground_y - 14  # standing on ground
         self.ground_y = ground_y
-        self.state = 'waiting'  # waiting → running → boarding → onboard → rescued
+        self.state = 'waiting'  # waiting -> running -> boarding -> onboard -> rescued
         self.surface = make_civilian_surface()
         self.target_x = 0
         self.rescued = False
@@ -1212,7 +1212,7 @@ class Civilian:
 
     @property
     def rect(self) -> pygame.Rect:
-        """10×14 collision rectangle at the civilian's position."""
+        """10x14 collision rectangle at the civilian's position."""
         return pygame.Rect(self.x - 5, self.y, 10, 14)
 
 
@@ -1305,7 +1305,7 @@ class EnemyGun:
 
     @property
     def rect(self) -> pygame.Rect:
-        """24×20 collision rectangle at the gun's position."""
+        """24x20 collision rectangle at the gun's position."""
         return pygame.Rect(self.x - 12, self.y, 24, 20)
 
 
@@ -1364,9 +1364,9 @@ def draw_hud(screen: pygame.Surface, heli: Helicopter, civilians: list[Any],
     """Render the HUD overlay: hearts, bombs, civilian/firepower status, score.
 
     Layout (left-aligned at x=10):
-        Line 1 (y=10):  Hearts (♥) — red filled / white outline.
+        Line 1 (y=10):  Hearts (heart symbol) -- red filled / white outline.
         Line 2 (y=32):  Bombs remaining (B: N/MAX).
-        Line 3 (y=54):  Civilians rescued (Civ: N/TOTAL) + firepower diamonds (PWR: ◆◆◇◇◇).
+        Line 3 (y=54):  Civilians rescued (Civ: N/TOTAL) + firepower diamonds (PWR: filled/empty diamonds).
         Top-right:      Score (y=10, right-aligned).
 
     If all civilians are onboard, a centred "RETURN TO BASE!" message
@@ -1419,11 +1419,11 @@ def draw_hud(screen: pygame.Surface, heli: Helicopter, civilians: list[Any],
 # Main game
 # ---------------------------------------------------------------------------
 class Game:
-    """Main game class — state machine, update loop, rendering.
+    """Main game class -- state machine, update loop, rendering.
 
     Owns all game entities (helicopter, civilians, enemy guns, projectiles,
     particles, explosions) and coordinates their update/draw. Runs the
-    event loop and manages the state machine (TITLE → PLAYING → VICTORY/GAME_OVER).
+    event loop and manages the state machine (TITLE -> PLAYING -> VICTORY/GAME_OVER).
 
     All procedural art surfaces are pre-computed once; per-frame rendering
     scrolls them according to the camera position.
@@ -1568,9 +1568,9 @@ class Game:
         """Process the Pygame event queue for one frame.
 
         Dispatches based on self.state:
-            TITLE:      SPACE → new_game(), PLAYING state, start engine.
-            PLAYING:    SPACE → shoot bullet(s); M → drop bomb.
-            VICTORY/    SPACE → reset to TITLE, stop all sounds, restart
+            TITLE:      SPACE -> new_game(), PLAYING state, start engine.
+            PLAYING:    SPACE -> shoot bullet(s); M -> drop bomb.
+            VICTORY/    SPACE -> reset to TITLE, stop all sounds, restart
             GAME_OVER:          background music for the title screen.
 
         ESC or window close always returns False to quit the game.
@@ -1626,13 +1626,13 @@ class Game:
             2. Engine exhaust particles
             3. Camera auto-scroll
             4. Bullet/enemy-bullet/bomb updates
-            5. Bomb → explosion + AOE damage
+            5. Bomb -> explosion + AOE damage
             6. Enemy guns fire toward helicopter
-            7. Bullet ↔ enemy-gun collisions
-            8. Enemy-bullet ↔ helicopter collisions
-            9. Civilian AI (waiting → running → boarding)
-            10. Helicopter death check → GAME_OVER
-            11. All-onboard victory check → return + helipad landing
+            7. Bullet <-> enemy-gun collisions
+            8. Enemy-bullet <-> helicopter collisions
+            9. Civilian AI (waiting -> running -> boarding)
+            10. Helicopter death check -> GAME_OVER
+            11. All-onboard victory check -> return + helipad landing
              12. Helipad hint timer
         """
         # Always update explosions and particles (for game over / victory animations)
@@ -1913,9 +1913,9 @@ class Game:
         controls = [
             "CONTROLS",
             "",
-            "W A S D  — Move helicopter",
-            "SPACE    — Shoot bullets",
-            "M        — Drop bomb",
+            "W A S D  -- Move helicopter",
+            "SPACE    -- Shoot bullets",
+            "M        -- Drop bomb",
             "",
             "Press SPACE to start",
         ]
@@ -1941,10 +1941,10 @@ class Game:
         """Render the playing field: parallax layers, terrain, entities.
 
         Draw order (back to front):
-            1. Clouds (0.15× scroll, tiled)
-            2. Mountains (0.25× scroll, tiled)
-            3. Hills (0.5× scroll, tiled)
-            4. Terrain surface (1× scroll, clipped to visible area)
+            1. Clouds (0.15x scroll, tiled)
+            2. Mountains (0.25x scroll, tiled)
+            3. Hills (0.5x scroll, tiled)
+            4. Terrain surface (1x scroll, clipped to visible area)
             5. Base helipad + building (if visible)
             6. Decoration trees
             7. Enemy guns
