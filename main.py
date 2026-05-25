@@ -777,11 +777,23 @@ class Helicopter:
             self.invincible_timer -= 1
 
     def shoot(self):
+        """Fire one or more bullets downward-forward at the helicopter's current position.
+
+        Firepower scales with rescued civilians:
+            num_bullets = 1 + (passengers // 2), clamped to [1, 5].
+
+        When num_bullets == 1, fires a single center bullet (vx=vy=10, 45° down-right).
+        When num_bullets > 1, fires a symmetric fan spread across FIRE_SPREAD_DEG degrees
+        centered on 45° down-right. Each bullet gets its own (vx, vy) via trig so that
+        all bullets travel at the same speed but different trajectories.
+
+        Returns:
+            list[Bullet]: Empty list if on cooldown, otherwise 1-5 Bullet objects.
+        """
         if self.shoot_cooldown > 0:
             return []
         self.shoot_cooldown = SHOOT_COOLDOWN
 
-        # Firepower: 1 base bullet + 1 per 2 rescued civilians (max 5)
         num = min(5, 1 + len(self.passengers) // 2)
         cx, cy = self.x, self.bottom
 
@@ -831,7 +843,25 @@ class Helicopter:
 
 
 class Bullet:
-    def __init__(self, x, y, vx=None, vy=None):
+    """A player-fired projectile that travels diagonally down-right.
+
+    Spawned by Helicopter.shoot(). Moves at a fixed velocity (vx, vy)
+    each frame. Dies when it exits the visible area (bottom or right edge).
+    Collision with enemy guns is handled externally in Game.update().
+    """
+
+    def __init__(self, x: float, y: float, vx: float | None = None, vy: float | None = None):
+        """Initialise bullet at world position (x, y) with given velocity.
+
+        If vx or vy is None, defaults to BULLET_SPEED (10), giving the
+        standard 45° down-right trajectory for single bullets.
+
+        Args:
+            x: World x position (pixels).
+            y: World y position (pixels).
+            vx: Horizontal velocity (px/frame). Positive = right.
+            vy: Vertical velocity (px/frame). Positive = down.
+        """
         self.x = x
         self.y = y
         self.vx = BULLET_SPEED if vx is None else vx
@@ -839,7 +869,8 @@ class Bullet:
         self.alive = True
         self.surface = make_bullet_surface()
 
-    def update(self):
+    def update(self) -> None:
+        """Advance bullet one frame: move by (vx, vy), kill if off-screen."""
         if not self.alive:
             return
         self.x += self.vx
@@ -1100,6 +1131,24 @@ class Particle:
 # ---------------------------------------------------------------------------
 def draw_hud(screen: pygame.Surface, heli: Helicopter, civilians: list[Any],
              score: int, font: pygame.font.Font) -> None:
+    """Render the HUD overlay: hearts, bombs, civilian/firepower status, score.
+
+    Layout (left-aligned at x=10):
+        Line 1 (y=10):  Hearts (♥) — red filled / white outline.
+        Line 2 (y=32):  Bombs remaining (B: N/MAX).
+        Line 3 (y=54):  Civilians rescued (Civ: N/TOTAL) + firepower diamonds (PWR: ◆◆◇◇◇).
+        Top-right:      Score (y=10, right-aligned).
+
+    If all civilians are onboard, a centred "RETURN TO BASE!" message
+    appears at y=80.
+
+    Args:
+        screen: The pygame display surface.
+        heli: The helicopter instance (gives HP, bombs, passenger count).
+        civilians: List of all Civilian objects in the level.
+        score: Current player score.
+        font: Monospace-style pygame Font for rendering text.
+    """
     # Hearts
     heart_str = ""
     for i in range(heli.max_hp):
