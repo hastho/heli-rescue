@@ -27,4 +27,5 @@ src/
 
 # Internal agent workflow files (not for public repo)
 AGENTS.md
+WORKFLOW_STATE.md
 .opencode/
