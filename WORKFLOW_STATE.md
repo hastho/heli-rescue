@@ -1,101 +1,178 @@
-# WORKFLOW_STATE
+# Workflow State
 
-## Project Status (2026-05-25)
+## Request
 
-All phases complete. The game is fully functional with all 23 acceptance criteria passing.
+Build a side-scrolling helicopter rescue game in Python with an 8-bit retro aesthetic.
+The player flies a helicopter over a landscape, lands to pick up civilians from ground
+positions, fights enemy guns that shoot at the helicopter, drops bombs, and returns
+everyone safely to base for victory.
 
-## Current State
+---
 
-### Completed Features
+## Clarified Scope
 
-| Feature | Status | Details |
-|---------|--------|---------|
-| Core gameplay | Done | Helicopter movement, auto-scroll, landing, civilian pickup/delivery |
-| Combat | Done | Bullets (down-right diagonal, firepower scaling), bombs (straight down, AOE), enemy guns (aimed fire) |
-| State machine | Done | TITLE -> PLAYING -> VICTORY/GAME_OVER -> TITLE |
-| HUD | Done | HP hearts, bomb count, civilians + firepower, score, return/base hint messages |
-| Title screen | Done | Animated (twinkling stars, hue cycling, glint sweep), controls listing |
-| Sound effects | Done | Engine, shoot, bomb, explosion, pickup, damage, victory jingle |
-| VGZ/VGM music | Done | Sample-accurate playback via YM3812 emulator. Event-boundary rendering (not chunk-based). No fallback -- silent if no files found. |
-| Terrain + parallax | Done | Height map (6 zones, 4000px+), 3-layer parallax (clouds/mountains/hills) |
-| Palette themes | Done | Summer, autumn, winter, volcanic -- randomly chosen per game |
-| Firepower scaling | Done | 1 + (rescued // 2) bullets, up to 5, fanned spread |
-| Documentation | Done | All symbols docstringed, ASCII-only docs, TASK.md as requirements doc, AGENTS.md updated, WORKFLOW_STATE.md current |
-| Git workflow | Done | Feature branches, merge commits, no direct pushes to main |
+- **Rendering**: All graphics procedurally drawn (no sprite sheets, no image files)
+- **Audio**: Sound effects generated in code (waveforms). Background music from VGZ/VGM files (OPL2/YM3812 register data). No audio files.
+- **Level**: Fixed-length hand-crafted height map (~4000px+), 20px segments
+- **Civilians**: 8, scattered across the level, aggro when heli lands nearby
+- **Enemy guns**: 5, fixed positions, aimed fire when heli airborne and in range
+- **Helicopter**: 3 HP, unlimited bullets (cooldown), 5 bombs (limited, cooldown)
+- **Landing**: Automatic on ground contact (no landing key)
+- **Scrolling**: Auto-scroll right, pause on landing, backtrack at left edge, reverse on all-rescued
+- **Music**: VGZ/VGM via YM3812 emulator. No fallback -- silent if unavailable.
+- **Documentation**: ASCII-only. Every symbol has a docstring. TASK.md is a WHAT requirements doc.
 
-### Known Resolved Issues
+---
 
-| Issue | Root Cause | Fix |
-|-------|------------|-----|
-| VGZ half-speed | Mixer at 22050 Hz, VGM parser at 44100 Hz | Mixer changed to 44100 Hz |
-| Engine on title | `play(-1)` called at init | Engine starts only on PLAYING entry |
-| Chunk-boundary timing | Events processed at 0.1s chunks (100% delayed, avg 54ms) | Precise event-boundary rendering |
-| Engine too loud | Volume 0.08 vs music at 0.5 | Engine halved to 0.04 |
-| Unclosed docstring | Missing `"""` in `Game.update()` | Added closing quote |
-| `\-` escape warning | Non-ASCII in docstring | Replaced with ASCII |
+## Open Questions
 
-### Open / Not Yet Implemented
+None. All requirements have been clarified and implemented.
 
-- Unit tests (`tests/` directory configured in `pyproject.toml` but no files)
-- CI workflow (no `.github/workflows/`)
+---
 
-## Key Design Decisions (preserve these)
+## Constraints
 
-- No enemy respawn -- return trip is always peaceful
-- Landing on helipad without all civilians shows ~3-second hint (not victory)
-- All graphics and sounds generated in code -- no external assets (except VGZ files)
-- Helicopter ceiling at y=80, ground-clamped below
-- Camera clamps to `[0, LEVEL_WIDTH - SCREEN_WIDTH]`
-- Bullets fire diagonally down-right at 45-degree angle (vx=vy=10 baseline)
-- Bombs drop straight down at BOMB_FALL_SPEED, explode on ground contact
-- Firepower: 1 base bullet + 1 per 2 rescued civilians, max 5, fanned across 25-degree arc
-- Engine sound lifecycle: start on PLAYING entry, stop on VICTORY/GAME_OVER
-- Music lifecycle: play on TITLE and PLAYING, stop on VICTORY/GAME_OVER, restart on return to TITLE
-- VGZ renderer uses precise event-boundary timing (never chunk-based)
-- No generated FM fallback -- if no VGZ files found or ymfm-py unavailable, game plays silently
-- All documentation ASCII-only (no Unicode in docstrings, comments, or markdown)
+- Single Python file (no modules, no packages)
+- No external assets (except optional VGZ/VGM music files in `tunes/`)
+- Python 3.10+ compatible
+- Platform-independent (Linux, macOS, Windows)
+- Git workflow: feature branches, merge commits, never commit to main directly
+- All documentation ASCII-only
 
-## Audio Requirements Summary
+---
 
-| Sound | Type | Lifecycle |
-|-------|------|-----------|
-| Engine | Square wave, loops | PLAYING only |
-| Shoot | White noise burst | On SPACE |
-| Bomb | Descending tone | On M |
-| Explosion | White noise burst | On bomb/bullet kill |
-| Pickup | Ascending beep | On civilian boarding |
-| Damage | Low buzz | On hit |
-| Victory | Sine melody | On VICTORY state |
-| Music | VGZ/VGM via emulator | TITLE + PLAYING, stop on end states |
+## Plan
 
-## VGZ/VGM Player Notes
+All features are implemented. Next possible steps (not yet started):
 
-- VGM commands: `0x5A` = YM3812 write (reg, val). Wait commands: `0x70-0x7F` (short, N+1 samples), `0x62` (735 = 1/60s), `0x63` (882 = 1/50s), `0x61` (16-bit count). All timing at 44100 Hz.
-- YM3812 emulator API: `chip = YM3812(clock=3579545)`, `chip.write(port, val)`, `chip.generate(n)` returns memoryview of int32.
-- Render volume 0.5, max duration 120s.
-- No fallback if no files or emulator missing -- game proceeds silently.
-
-## Next Steps (if continuing)
-
-1. Add unit tests in `tests/` directory (pytest configured in `pyproject.toml`)
-2. Add `.github/workflows/test.yml` for CI
+1. Add unit tests in `tests/` directory (pytest configured in `pyproject.toml`, no files yet)
+2. Add `.github/workflows/test.yml` CI workflow
 3. Verify gameplay across all 4 palette themes for visual correctness
 
-## Git History
+---
 
-Branch-per-feature workflow. Notable merges on main (most recent first):
+## Debate Notes
+
+All prior debates resolved. Key decisions confirmed:
+
+- Bullets fire diagonally down-right (not straight up, not straight down)
+- Firepower scales with rescued civilians (1 + rescued/2 bullets, max 5, fanned spread)
+- VGZ renderer uses precise event-boundary timing (not chunk-based)
+- No generated FM music fallback (silent if no VGZ files found)
+- Engine sound starts only on PLAYING state entry
+- Palette themes randomly chosen per game (summer/autumn/winter/volcanic)
+
+---
+
+## Files To Change
+
+No active implementation. Last change: documentation cleanup across all markdown files.
+
+---
+
+## Implementation Notes
+
+### Architecture
+- Single file (`main.py`) with clearly separated sections: constants, sound helpers, VGM/VGZ player, pixel-art assets, level/terrain, entity classes, HUD, game state machine, entry point
+- All graphics via drawing primitives (rect, ellipse, circle, polygon)
+- All sounds via waveform arrays (square, sine, white noise)
+- Background music via VGZ/VGM command parsing + YM3812 emulator
+
+### Entity State Machines
+- Civilian: `waiting -> running -> boarding -> onboard -> rescued`
+- Game: `TITLE -> PLAYING -> VICTORY/GAME_OVER -> TITLE`
+
+### Gameplay Values
+- Helicopter: speed 5, HP 3, bombs 5
+- Bullet: speed 10, cooldown 8 frames, diagonal down-right
+- Bomb: fall speed 6, cooldown 20 frames, AOE radius 50px
+- Enemy gun: range 300, fire interval 45 frames, HP 3
+- Auto-scroll: normal 2px, backtrack -1px, return -4px
+
+### VGZ/VGM Key Notes
+- Command byte `0x5A` = YM3812 write (reg, val)
+- Wait commands: `0x70-0x7F` (N+1 samples), `0x62` (735 = 1/60s), `0x63` (882 = 1/50s), `0x61` (16-bit count)
+- All timing at 44100 Hz (mixer must match)
+- Event-boundary rendering (never chunk-based)
+- Volume 0.5, max duration 120s
+
+---
+
+## Review Findings
+
+All prior review findings addressed:
+
+| Finding | Status |
+|---------|--------|
+| VGZ half-speed due to sample rate mismatch | Fixed |
+| Engine playing on title screen | Fixed |
+| Chunk-boundary timing corrupting audio | Fixed (event-boundary rendering) |
+| Engine volume too loud | Fixed |
+| Missing docstring closer in Game.update() | Fixed |
+| Invalid escape in docstring | Fixed |
+| Surface factory functions undocumented | Fixed (all symbols now have docstrings) |
+| Non-ASCII in documentation | Fixed (ASCII-only policy enforced) |
+
+---
+
+## Test Results
+
+All 23 acceptance criteria from TASK.md pass:
+
+1. Title screen with animated effects
+2. SPACE on title starts new game with engine sound
+3. WASD moves heli in all four directions
+4. SPACE fires bullets diagonally down-right (1-5, scaling with rescued)
+5. M drops bomb straight down, explodes on ground contact
+6. Landing pauses auto-scroll, enables civilian pickup
+7. Civilians run to grounded nearby heli and board
+8. Heli takeoff while civilian running causes them to wait
+9. Helipad landing without all civilians shows hint
+10. Helipad landing with all civilians triggers victory
+11. Enemy guns fire aimed bullets at airborne heli
+12. Guns destroyed by 3 bullets or 1 bomb
+13. Heli takes damage, flashes during invincibility
+14. HP=0 triggers game over with explosion
+15. Score accumulates from rescues and gun kills
+16. All rescued triggers return-to-base (reverse scroll)
+17. ESC quits at any point
+18. SPACE on end screens returns to title
+19. Each new game picks random palette theme
+20. Firepower increases every 2 rescued (up to 5 bullets)
+21. No warnings or errors on run
+22. Every symbol has a docstring
+23. Commits follow branch + merge workflow
+
+---
+
+## Security Findings
+
+No security concerns identified. Game is single-player, single-file, no networking,
+no file writes beyond reading optional VGZ files from `tunes/`.
+
+---
+
+## Lint Results
+
+Not applicable. No automated linter configured. `make lint` target exists in
+`Makefile` but no tool is specified. Commands:
+
+```bash
+make lint     # currently no-op placeholder
+make test     # currently no-op placeholder (no test files yet)
+```
+
+---
+
+## Commit Message Draft
+
+No active implementation. Last commit message (for doc cleanup):
 
 ```
-Merge feat/ascii-only-docs          -- Replace non-ASCII in docs
-Merge feat/docstrings-all           -- All symbols documented
-Merge feat/firepower-levels         -- Firepower scales with rescued
-Merge feat/bullets-diagonal         -- Bullets fire down-right
-Merge feat/bullets-downward         -- Bullets fire downward (interim)
-Merge feat/remove-fm-fallback       -- VGZ-only music
-Merge feat/level-palette-themes     -- Palette themes
-Merge feat/title-palette-tricks     -- Title screen animations
-Merge feat/engine-lifecycle-fix     -- Fix engine audio lifecycle
-Merge feat/sample-rate-fix          -- Fix VGZ half-speed
-Merge feat/precise-rendering        -- Fix chunk-boundary timing
-... (earlier: initial features)
+docs: tidy AGENTS.md and WORKFLOW_STATE.md
+
+AGENTS.md: Remove line numbers, tool-specific phrasing, non-ASCII.
+WORKFLOW_STATE.md: Replace with standard workflow template sections.
+All three doc files (AGENTS.md, TASK.md, WORKFLOW_STATE.md) are now
+ASCII-only and follow project conventions.
 ```
