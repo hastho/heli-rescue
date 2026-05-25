@@ -52,6 +52,70 @@ ORANGE = (240, 140, 20)
 PURPLE = (140, 60, 180)
 BEIGE = (210, 180, 140)
 
+# Theme palettes (swap these to change level appearance without changing layout)
+THEMES = {
+    'summer': {
+        'dirt': (140, 80, 30),
+        'dirt_dark': (100, 55, 15),
+        'grass': (60, 180, 60),
+        'grass_dark': (20, 120, 20),
+        'mountain': (60, 70, 100),
+        'mountain_outline': (50, 60, 90),
+        'hill': (40, 80, 40, 160),
+        'hill_dark': (30, 70, 30, 160),
+        'trunk': (100, 55, 15),
+        'foliage': (60, 180, 60),
+        'foliage_dark': (20, 120, 20),
+        'building': (100, 55, 15),
+        'roof': (220, 40, 40),
+    },
+    'autumn': {
+        'dirt': (140, 80, 30),
+        'dirt_dark': (100, 55, 15),
+        'grass': (180, 160, 40),
+        'grass_dark': (140, 120, 20),
+        'mountain': (80, 70, 90),
+        'mountain_outline': (70, 60, 80),
+        'hill': (160, 100, 40, 160),
+        'hill_dark': (130, 80, 30, 160),
+        'trunk': (100, 55, 15),
+        'foliage': (180, 120, 20),
+        'foliage_dark': (140, 80, 10),
+        'building': (100, 55, 15),
+        'roof': (180, 60, 20),
+    },
+    'winter': {
+        'dirt': (150, 150, 160),
+        'dirt_dark': (120, 120, 130),
+        'grass': (200, 210, 220),
+        'grass_dark': (170, 180, 190),
+        'mountain': (100, 110, 140),
+        'mountain_outline': (80, 90, 120),
+        'hill': (130, 150, 170, 160),
+        'hill_dark': (110, 130, 150, 160),
+        'trunk': (80, 50, 30),
+        'foliage': (100, 140, 100),
+        'foliage_dark': (60, 100, 60),
+        'building': (80, 60, 40),
+        'roof': (140, 40, 40),
+    },
+    'volcanic': {
+        'dirt': (80, 50, 50),
+        'dirt_dark': (50, 30, 30),
+        'grass': (60, 40, 40),
+        'grass_dark': (80, 30, 30),
+        'mountain': (50, 30, 40),
+        'mountain_outline': (40, 20, 30),
+        'hill': (80, 40, 40, 160),
+        'hill_dark': (60, 30, 30, 160),
+        'trunk': (60, 40, 20),
+        'foliage': (40, 30, 20),
+        'foliage_dark': (30, 20, 10),
+        'building': (60, 40, 20),
+        'roof': (200, 40, 20),
+    },
+}
+
 # Helicopter
 HELI_SPEED = 5
 HELI_SIZE = (36, 26)
@@ -773,8 +837,13 @@ def get_ground_y(terrain: list[int], x: float) -> int:
     return terrain[seg_idx]
 
 
-def make_terrain_surface(terrain: list[int], level_width: int) -> pygame.Surface:
-    """Draw the full terrain surface (dirt + grass top)."""
+def make_terrain_surface(terrain: list[int], level_width: int,
+                         palette: dict | None = None) -> pygame.Surface:
+    """Draw the full terrain surface (dirt + grass top).
+    If palette is None, uses the 'summer' theme.
+    """
+    if palette is None:
+        palette = THEMES['summer']
     surf = pygame.Surface((level_width, SCREEN_HEIGHT), pygame.SRCALPHA)
     seg_w = TERRAIN_SEGMENT
     for i, h in enumerate(terrain):
@@ -782,17 +851,24 @@ def make_terrain_surface(terrain: list[int], level_width: int) -> pygame.Surface
         # Dirt column
         dirt_h = SCREEN_HEIGHT - h
         rect = pygame.Rect(x, h, seg_w, dirt_h)
-        # Alternate brown shades for pixel effect
-        col = BROWN if (i // 2) % 2 == 0 else DARK_BROWN
+        # Alternate shades for pixel effect
+        col = palette['dirt'] if (i // 2) % 2 == 0 else palette['dirt_dark']
         pygame.draw.rect(surf, col, rect)
         # Grass line on top
-        grass_col = GREEN if (i // 3) % 2 == 0 else DARK_GREEN
+        grass_col = palette['grass'] if (i // 3) % 2 == 0 else palette['grass_dark']
         pygame.draw.rect(surf, grass_col, (x, h - 2, seg_w, 4))
     return surf
 
 
-def make_mountains_surface(level_width: int) -> pygame.Surface:
-    """Far background mountains."""
+def make_mountains_surface(level_width: int,
+                           palette: dict | None = None) -> pygame.Surface:
+    """Far background mountains.
+    If palette is None, uses the 'summer' theme.
+    """
+    if palette is None:
+        palette = THEMES['summer']
+    mtn_col = palette['mountain']
+    mtn_out = palette['mountain_outline']
     surf = pygame.Surface((level_width, SCREEN_HEIGHT), pygame.SRCALPHA)
     # Draw a few mountain shapes
     peaks = [
@@ -808,18 +884,23 @@ def make_mountains_surface(level_width: int) -> pygame.Surface:
     ]
     for px, py, pw in peaks:
         pts = [(px, SCREEN_HEIGHT), (px + pw // 2, py), (px + pw, SCREEN_HEIGHT)]
-        pygame.draw.polygon(surf, (60, 70, 100), pts)
-        pygame.draw.polygon(surf, (50, 60, 90), pts, 1)
+        pygame.draw.polygon(surf, mtn_col, pts)
+        pygame.draw.polygon(surf, mtn_out, pts, 1)
     return surf
 
 
-def make_hills_surface(level_width: int) -> pygame.Surface:
-    """Mid-ground hills."""
+def make_hills_surface(level_width: int,
+                       palette: dict | None = None) -> pygame.Surface:
+    """Mid-ground hills.
+    If palette is None, uses the 'summer' theme.
+    """
+    if palette is None:
+        palette = THEMES['summer']
     surf = pygame.Surface((level_width, SCREEN_HEIGHT), pygame.SRCALPHA)
     # Rolling hills
     for x in range(0, level_width, 4):
         h_val = 480 + int(30 * math.sin(x * 0.003)) + int(20 * math.sin(x * 0.007))
-        col = (40, 80, 40, 160) if (x // 8) % 2 == 0 else (30, 70, 30, 160)
+        col = palette['hill'] if (x // 8) % 2 == 0 else palette['hill_dark']
         pygame.draw.line(surf, col, (x, h_val), (x, SCREEN_HEIGHT))
     return surf
 
@@ -1269,10 +1350,6 @@ class Game:
         # Pre-compute assets
         random.seed(123)
         self.terrain = build_terrain()
-        self.terrain_surf = make_terrain_surface(self.terrain, LEVEL_WIDTH)
-        self.mountain_surf = make_mountains_surface(LEVEL_WIDTH)
-        self.hills_surf = make_hills_surface(LEVEL_WIDTH)
-        self.clouds_surf = make_clouds_surface(LEVEL_WIDTH)
         self.explosion_frames = make_explosion_surfaces()
 
         # Sounds
@@ -1327,6 +1404,13 @@ class Game:
 
     def new_game(self):
         random.seed()
+        # Pick a random theme and regenerate rendered surfaces
+        self.theme = random.choice(list(THEMES.keys()))
+        pal = THEMES[self.theme]
+        self.terrain_surf = make_terrain_surface(self.terrain, LEVEL_WIDTH, pal)
+        self.mountain_surf = make_mountains_surface(LEVEL_WIDTH, pal)
+        self.hills_surf = make_hills_surface(LEVEL_WIDTH, pal)
+        self.clouds_surf = make_clouds_surface(LEVEL_WIDTH)  # clouds stay white
         self.heli = Helicopter()
         self.scroll_x = 0
         self.auto_scroll_speed = SCROLL_NORMAL
@@ -1765,6 +1849,7 @@ class Game:
         # Only draw if visible
         if scroll > 500:
             return
+        pal = THEMES.get(self.theme, THEMES['summer'])
 
         # Helipad
         pad_x = self.helipad_x - scroll
@@ -1779,13 +1864,13 @@ class Game:
         h_surf = self.small_font.render("H", True, WHITE)
         self.screen.blit(h_surf, (pad_x - h_surf.get_width() // 2, pad_y - 6))
 
-        # Small building
+        # Small building (theme-colored)
         build_x = 50 - scroll
         build_y = get_ground_y(self.terrain, 50) - 50
-        pygame.draw.rect(self.screen, DARK_BROWN,
+        pygame.draw.rect(self.screen, pal['building'],
                         (build_x, build_y, 40, 50))
         # Roof
-        pygame.draw.rect(self.screen, RED,
+        pygame.draw.rect(self.screen, pal['roof'],
                         (build_x - 4, build_y - 6, 48, 8))
         # Door
         pygame.draw.rect(self.screen, DARK_GRAY,
@@ -1798,21 +1883,22 @@ class Game:
 
     def _draw_trees(self, scroll):
         """Draw decorative trees."""
+        pal = THEMES.get(self.theme, THEMES['summer'])
         for tx in self.tree_positions:
             sx = int(tx - scroll)
             if sx < -30 or sx > SCREEN_WIDTH + 30:
                 continue
             gy = get_ground_y(self.terrain, tx)
             # Trunk
-            pygame.draw.rect(self.screen, DARK_BROWN,
+            pygame.draw.rect(self.screen, pal['trunk'],
                             (sx - 3, gy - 30, 6, 30))
             # Foliage (triangular)
             pts = [(sx, gy - 50), (sx - 15, gy - 28), (sx + 15, gy - 28)]
-            col = DARK_GREEN if (tx // 100) % 2 == 0 else GREEN
+            col = pal['foliage_dark'] if (tx // 100) % 2 == 0 else pal['foliage']
             pygame.draw.polygon(self.screen, col, pts)
-            # Second layer
+            # Second layer (swap shading)
             pts2 = [(sx, gy - 42), (sx - 12, gy - 24), (sx + 12, gy - 24)]
-            pygame.draw.polygon(self.screen, GREEN if col == DARK_GREEN else DARK_GREEN, pts2)
+            pygame.draw.polygon(self.screen, pal['foliage'] if col == pal['foliage_dark'] else pal['foliage_dark'], pts2)
 
     def _draw_overlay(self, title_text, subtitle_text, title_color):
         """Draw a translucent overlay with game result."""
