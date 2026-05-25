@@ -135,6 +135,7 @@ BULLET_SPEED = 10
 ENEMY_BULLET_SPEED = 4
 BOMB_FALL_SPEED = 6
 EXPLOSION_DURATION = 15  # frames
+FIRE_SPREAD_DEG = 25     # total spread arc for multi-bullet fan (degrees)
 
 # Civilians
 CIVILIAN_RUN_SPEED = 2
@@ -777,9 +778,30 @@ class Helicopter:
 
     def shoot(self):
         if self.shoot_cooldown > 0:
-            return None
+            return []
         self.shoot_cooldown = SHOOT_COOLDOWN
-        return Bullet(self.x, self.bottom)  # spawn at helicopter bottom
+
+        # Firepower: 1 base bullet + 1 per 2 rescued civilians (max 5)
+        num = min(5, 1 + len(self.passengers) // 2)
+        cx, cy = self.x, self.bottom
+
+        if num == 1:
+            return [Bullet(cx, cy)]
+
+        spread = math.radians(FIRE_SPREAD_DEG)
+        step = spread / (num - 1)
+        base_angle = math.pi / 4  # 45° down-right
+        start = base_angle - spread / 2
+        # Speed magnitude matching the current vx=vy=10 baseline
+        mag = math.sqrt(BULLET_SPEED * BULLET_SPEED * 2)
+
+        bullets = []
+        for i in range(num):
+            angle = start + step * i
+            vx = mag * math.cos(angle)
+            vy = mag * math.sin(angle)
+            bullets.append(Bullet(cx, cy, vx, vy))
+        return bullets
 
     def drop_bomb(self):
         if self.bombs <= 0 or self.bomb_cooldown > 0:
@@ -809,11 +831,11 @@ class Helicopter:
 
 
 class Bullet:
-    def __init__(self, x, y):
+    def __init__(self, x, y, vx=None, vy=None):
         self.x = x
         self.y = y
-        self.vx = BULLET_SPEED   # forward (rightward) — hit enemies ahead
-        self.vy = BULLET_SPEED   # downward — hit ground enemies
+        self.vx = BULLET_SPEED if vx is None else vx
+        self.vy = BULLET_SPEED if vy is None else vy
         self.alive = True
         self.surface = make_bullet_surface()
 
@@ -1093,10 +1115,12 @@ def draw_hud(screen: pygame.Surface, heli: Helicopter, civilians: list[Any],
     bomb_surf = font.render(bomb_str, True, WHITE)
     screen.blit(bomb_surf, (10, 32))
 
-    # Civilians rescued / total
+    # Civilians rescued / total + firepower
     rescued = sum(1 for c in civilians if c.state == 'onboard' or c.state == 'rescued')
     total = len(civilians)
-    civ_str = f"Civ: {rescued}/{total}"
+    pwr = min(5, 1 + len(heli.passengers) // 2)
+    pwr_str = '♦' * pwr + '◇' * (5 - pwr)
+    civ_str = f"Civ: {rescued}/{total}  PWR: {pwr_str}"
     civ_surf = font.render(civ_str, True, WHITE)
     screen.blit(civ_surf, (10, 54))
 
@@ -1252,9 +1276,9 @@ class Game:
                         self.sounds['engine'].play(-1)  # start engine when gameplay begins
                 elif self.state == GameState.PLAYING:
                     if event.key == pygame.K_SPACE:
-                        b = self.heli.shoot()
-                        if b:
-                            self.bullets.append(b)
+                        bullets = self.heli.shoot()
+                        if bullets:
+                            self.bullets.extend(bullets)
                             self.sounds['shoot'].play()
                     if event.key == pygame.K_m:
                         b = self.heli.drop_bomb()
