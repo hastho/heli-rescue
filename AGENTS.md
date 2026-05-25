@@ -4,6 +4,21 @@
 
 Single-file Pygame game (`main.py`, ~1843 lines). No external assets, no build step, Python 3.10+.
 
+## Git workflow
+
+- **`main`** branch is the stable, tested state. Never commit directly to `main`.
+- Every new feature or bug fix gets its own **feature branch**:
+  ```
+  git checkout -b feat/<description>
+  ```
+- Always run `make test` (or the relevant test command) before merging.
+- Only merge when all tests pass:
+  ```
+  git checkout main
+  git merge feat/<description>
+  ```
+- Merge commits preferred over rebase for traceability.
+
 ## Run
 
 ```bash
