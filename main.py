@@ -155,6 +155,13 @@ NUM_SEGMENTS = LEVEL_WIDTH // TERRAIN_SEGMENT  # 200
 # Game states
 # ---------------------------------------------------------------------------
 class GameState(Enum):
+    """Game state machine.
+
+    Transitions:
+        TITLE --SPACE--> PLAYING --all rescued--> VICTORY
+        PLAYING --HP=0--> GAME_OVER
+        VICTORY/GAME_OVER --SPACE--> TITLE
+    """
     TITLE = 0
     PLAYING = 1
     VICTORY = 2
@@ -183,11 +190,35 @@ def _square_wave(freq: float, duration_ms: float, sample_rate: int = 22050) -> l
 
 
 def _white_noise(duration_ms: float, sample_rate: int = 22050) -> list[int]:
+    """Generate white noise samples for explosion/sfx.
+
+    Each sample is a random value in [-16000, 16000]. Used to create
+    explosion, shoot, and damage sound effects.
+
+    Args:
+        duration_ms: Length of the noise burst in milliseconds.
+        sample_rate: Samples per second (default 22050, overridden to 44100 by init_sounds).
+
+    Returns:
+        list[int]: List of 16-bit PCM samples.
+    """
     n_samples = int(sample_rate * duration_ms / 1000)
     return [random.randint(-16000, 16000) for _ in range(n_samples)]
 
 
 def _sine_wave(freq: float, duration_ms: float, sample_rate: int = 22050) -> list[int]:
+    """Generate sine wave samples for musical tones/pickup sounds.
+
+    Used for the victory jingle and civilian pickup beep.
+
+    Args:
+        freq: Frequency in Hz (e.g. 440 for A4).
+        duration_ms: Length of the tone in milliseconds.
+        sample_rate: Samples per second (default 22050).
+
+    Returns:
+        list[int]: List of 16-bit PCM samples.
+    """
     n_samples = int(sample_rate * duration_ms / 1000)
     return [
         int(16000 * math.sin(2 * math.pi * freq * i / sample_rate))
@@ -488,6 +519,7 @@ def make_enemy_gun_surface() -> pygame.Surface:
 
 
 def make_bullet_surface() -> pygame.Surface:
+    """4×8 pixel yellow bullet sprite (player projectile)."""
     surf = pygame.Surface((4, 8), pygame.SRCALPHA)
     pygame.draw.rect(surf, YELLOW, (0, 0, 4, 8))
     pygame.draw.rect(surf, ORANGE, (1, 1, 2, 6))
@@ -495,6 +527,7 @@ def make_bullet_surface() -> pygame.Surface:
 
 
 def make_enemy_bullet_surface() -> pygame.Surface:
+    """6×6 pixel red/yellow bullet sprite (enemy projectile)."""
     surf = pygame.Surface((6, 6), pygame.SRCALPHA)
     pygame.draw.circle(surf, RED, (3, 3), 3)
     pygame.draw.circle(surf, YELLOW, (3, 3), 1)
@@ -502,6 +535,7 @@ def make_enemy_bullet_surface() -> pygame.Surface:
 
 
 def make_bomb_surface() -> pygame.Surface:
+    """8×12 pixel bomb sprite with fins."""
     surf = pygame.Surface((8, 12), pygame.SRCALPHA)
     pygame.draw.ellipse(surf, DARK_GRAY, (0, 2, 8, 10))
     pygame.draw.rect(surf, GRAY, (2, 0, 4, 3))
@@ -704,7 +738,22 @@ def make_clouds_surface(level_width: int) -> pygame.Surface:
 # Entity classes
 # ---------------------------------------------------------------------------
 class Helicopter:
+    """Player-controlled helicopter.
+
+    Manages position, velocity, HP, bombs, grounded state, invincibility,
+    rescued passenger list, and firing cooldowns. Updated each frame by
+    Game.update(). Rendered by Game._draw_game().
+
+    Movement is WASD with HELI_SPEED px/frame. Ground collision snaps the
+    heli to the terrain surface; ceiling clamped to y=80. Level edges are
+    also clamped.
+    """
+
     def __init__(self):
+        """Initialise helicopter at default spawn position (150, 300).
+
+        State: full HP, full bombs, no passengers, no cooldowns, alive.
+        """
         self.x = 150
         self.y = 300
         self.vx = 0
@@ -722,14 +771,26 @@ class Helicopter:
         self.alive = True
 
     @property
-    def rect(self):
+    def rect(self) -> pygame.Rect:
+        """AABB collision rectangle centred on (x, y) with (w, h)."""
         return pygame.Rect(self.x - self.w // 2, self.y - self.h // 2, self.w, self.h)
 
     @property
-    def bottom(self):
+    def bottom(self) -> float:
+        """Y-coordinate of the helicopter's bottom edge."""
         return self.y + self.h // 2
 
-    def update(self, keys, terrain):
+    def update(self, keys: list[bool], terrain: list[int]) -> None:
+        """Advance helicopter one frame: handle input, movement, collisions.
+
+        Reads WASD from the pressed-keys array, applies velocity, then
+        resolves ground collision (snap to terrain surface), ceiling clamp
+        (y >= 80), and level-boundary clamps. Decrements all cooldowns.
+
+        Args:
+            keys: Boolean array from pygame.key.get_pressed().
+            terrain: Height array from build_terrain().
+        """
         if not self.alive:
             return
 
@@ -815,14 +876,30 @@ class Helicopter:
             bullets.append(Bullet(cx, cy, vx, vy))
         return bullets
 
-    def drop_bomb(self):
+    def drop_bomb(self) -> Bomb | None:
+        """Drop a single bomb below the helicopter if available and off cooldown.
+
+        Bombs are limited (HELI_MAX_BOMBS) and have a cooldown (BOMB_COOLDOWN
+        frames). Each bomb falls straight down and explodes on ground contact.
+
+        Returns:
+            Bomb | None: A new Bomb object, or None if out of bombs or on cooldown.
+        """
         if self.bombs <= 0 or self.bomb_cooldown > 0:
             return None
         self.bombs -= 1
         self.bomb_cooldown = BOMB_COOLDOWN
         return Bomb(self.x, self.bottom)
 
-    def take_damage(self):
+    def take_damage(self) -> bool:
+        """Inflict one point of damage. No-op during invincibility window.
+
+        On HP reaching 0, sets alive=False. Invincibility lasts 30 frames
+        and is indicated by the helicopter sprite flashing.
+
+        Returns:
+            bool: True if damage was applied, False if invincible.
+        """
         if self.invincible_timer > 0:
             return False
         self.hp -= 1
@@ -831,7 +908,15 @@ class Helicopter:
             self.alive = False
         return True
 
-    def draw(self, screen, offset_x):
+    def draw(self, screen: pygame.Surface, offset_x: float) -> None:
+        """Render the helicopter at its world position, offset by camera scroll.
+
+        Flashes (skips every other 4-frame interval) while invincible.
+
+        Args:
+            screen: The pygame display surface.
+            offset_x: Camera scroll offset (self.scroll_x).
+        """
         if not self.alive:
             return
         sx = int(self.x - offset_x - self.w // 2)
@@ -878,7 +963,8 @@ class Bullet:
         if self.y > SCREEN_HEIGHT or self.x > LEVEL_WIDTH:
             self.alive = False
 
-    def draw(self, screen, offset_x):
+    def draw(self, screen: pygame.Surface, offset_x: float) -> None:
+        """Render bullet at its world position, offset by camera scroll."""
         if not self.alive:
             return
         sx = int(self.x - offset_x - 2)
@@ -886,12 +972,31 @@ class Bullet:
         screen.blit(self.surface, (sx, sy))
 
     @property
-    def rect(self):
+    def rect(self) -> pygame.Rect:
+        """4×8 collision rectangle at the bullet's current position."""
         return pygame.Rect(self.x - 2, self.y, 4, 8)
 
 
 class EnemyBullet:
-    def __init__(self, x, y, target_x, target_y):
+    """A bullet fired by an EnemyGun, aimed at the helicopter's current position.
+
+    Moves at GUN_BULLET_SPEED px/frame in the direction of the target.
+    Dies when it exits the visible area (any edge +20px margin).
+    """
+
+    def __init__(self, x: float, y: float, target_x: float, target_y: float):
+        """Initialise bullet at (x, y) heading toward (target_x, target_y).
+
+        Velocity is computed by normalising the aim vector and scaling to
+        GUN_BULLET_SPEED. If the target is at the same position (dist < 1px),
+        falls straight down as a fallback.
+
+        Args:
+            x: Spawn world-x (gun muzzle position).
+            y: Spawn world-y (gun muzzle position).
+            target_x: Target world-x (helicopter centre).
+            target_y: Target world-y (helicopter centre).
+        """
         self.x = x
         self.y = y
         self.alive = True
@@ -906,7 +1011,8 @@ class EnemyBullet:
             self.vx = dx / dist * GUN_BULLET_SPEED
             self.vy = dy / dist * GUN_BULLET_SPEED
 
-    def update(self):
+    def update(self) -> None:
+        """Advance bullet one frame: move, kill if off-screen."""
         if not self.alive:
             return
         self.x += self.vx
@@ -914,7 +1020,8 @@ class EnemyBullet:
         if self.y > SCREEN_HEIGHT + 20 or self.y < -20 or self.x < -20 or self.x > LEVEL_WIDTH + 20:
             self.alive = False
 
-    def draw(self, screen, offset_x):
+    def draw(self, screen: pygame.Surface, offset_x: float) -> None:
+        """Render enemy bullet at its world position, offset by camera scroll."""
         if not self.alive:
             return
         sx = int(self.x - offset_x - 3)
@@ -922,21 +1029,43 @@ class EnemyBullet:
         screen.blit(self.surface, (sx, sy))
 
     @property
-    def rect(self):
+    def rect(self) -> pygame.Rect:
+        """6×6 collision square centred on the bullet."""
         return pygame.Rect(self.x - 3, self.y - 3, 6, 6)
 
 
 class Bomb:
-    def __init__(self, x, y):
+    """A bomb dropped by the helicopter that falls straight down.
+
+    Explodes on ground contact, damaging nearby enemy guns (3 HP damage
+    in a 50px radius). Returns 'explode' from update() when it hits the
+    ground so the Game loop can spawn the explosion and check damage.
+    """
+
+    def __init__(self, x: float, y: float):
+        """Initialise bomb at (x, y) falling at BOMB_FALL_SPEED.
+
+        Args:
+            x: World-x position (helicopter centre).
+            y: World-y position (helicopter bottom).
+        """
         self.x = x
         self.y = y
         self.vy = BOMB_FALL_SPEED
         self.alive = True
         self.surface = make_bomb_surface()
 
-    def update(self, terrain):
+    def update(self, terrain: list[int]) -> str | None:
+        """Advance bomb one frame: fall, check ground/offscreen.
+
+        Args:
+            terrain: Height array from build_terrain().
+
+        Returns:
+            str | None: 'explode' if bomb hit the ground, None otherwise.
+        """
         if not self.alive:
-            return
+            return None
         self.y += self.vy
         ground_y = get_ground_y(terrain, self.x)
         if self.y + 6 >= ground_y:
@@ -946,7 +1075,8 @@ class Bomb:
             self.alive = False
         return None
 
-    def draw(self, screen, offset_x):
+    def draw(self, screen: pygame.Surface, offset_x: float) -> None:
+        """Render bomb at its world position, offset by camera scroll."""
         if not self.alive:
             return
         sx = int(self.x - offset_x - 4)
@@ -954,26 +1084,42 @@ class Bomb:
         screen.blit(self.surface, (sx, sy))
 
     @property
-    def rect(self):
+    def rect(self) -> pygame.Rect:
+        """8×12 collision rectangle at the bomb's current position."""
         return pygame.Rect(self.x - 4, self.y, 8, 12)
 
 
 class Explosion:
-    def __init__(self, x, y, frames):
+    """Animated explosion effect: expanding circle that fades through YELLOW→ORANGE→RED.
+
+    Each frame of the animation is drawn from a pre-rendered frame list.
+    Each frame is shown for 3 ticks, so total duration = len(frames) × 3.
+    """
+
+    def __init__(self, x: float, y: float, frames: list[pygame.Surface]):
+        """Initialise explosion at (x, y) with pre-rendered frame list.
+
+        Args:
+            x: World-x position (pixels).
+            y: World-y position (pixels).
+            frames: List of expanding circle surfaces from make_explosion_surfaces().
+        """
         self.x = x
         self.y = y
         self.frames = frames
         self.frame = 0
         self.alive = True
 
-    def update(self):
+    def update(self) -> None:
+        """Advance animation: increment frame counter, kill when complete."""
         if not self.alive:
             return
         self.frame += 1
         if self.frame >= len(self.frames) * 3:  # each frame shown for 3 ticks
             self.alive = False
 
-    def draw(self, screen, offset_x):
+    def draw(self, screen: pygame.Surface, offset_x: float) -> None:
+        """Render the current explosion frame, offset by camera scroll."""
         if not self.alive:
             return
         idx = min(self.frame // 3, len(self.frames) - 1)
@@ -984,7 +1130,29 @@ class Explosion:
 
 
 class Civilian:
-    def __init__(self, cid, x, ground_y):
+    """A civilian on the ground that can be rescued.
+
+    State machine:
+        waiting → running → boarding → onboard → rescued
+
+    - waiting:  Standing still, watching for a grounded heli nearby.
+    - running:  Moving toward the grounded helicopter at CIVILIAN_RUN_SPEED.
+    - boarding: Reached the helicopter — triggers onboard.
+    - onboard:  Passenger inside the helicopter (hidden from world).
+    - rescued:  Final state after victory (HUD counts these).
+
+    If the helicopter takes off while a civilian is running, they return
+    to waiting state.
+    """
+
+    def __init__(self, cid: int, x: float, ground_y: float):
+        """Initialise civilian at (x, ground_y), standing on the terrain.
+
+        Args:
+            cid: Unique civilian ID (index into generation order).
+            x: World-x position.
+            ground_y: Y-coordinate of the terrain surface at x.
+        """
         self.cid = cid
         self.x = x
         self.y = ground_y - 14  # standing on ground
@@ -994,9 +1162,18 @@ class Civilian:
         self.target_x = 0
         self.rescued = False
 
-    def update(self, heli_rect, heli_grounded):
+    def update(self, heli_rect: pygame.Rect, heli_grounded: bool) -> str | None:
+        """Advance civilian state machine one frame.
+
+        Args:
+            heli_rect: Helicopter AABB rect for distance checks.
+            heli_grounded: Whether the helicopter is currently on the ground.
+
+        Returns:
+            str | None: 'boarded' if the civilian just boarded, None otherwise.
+        """
         if self.state == 'onboard' or self.state == 'rescued':
-            return
+            return None
 
         if self.state == 'waiting':
             # Check if heli is nearby and grounded
@@ -1025,7 +1202,8 @@ class Civilian:
 
         return None
 
-    def draw(self, screen, offset_x):
+    def draw(self, screen: pygame.Surface, offset_x: float) -> None:
+        """Render civilian if not already onboard/rescued."""
         if self.state == 'onboard' or self.state == 'rescued':
             return
         sx = int(self.x - offset_x - 5)
@@ -1033,12 +1211,28 @@ class Civilian:
         screen.blit(self.surface, (sx, sy))
 
     @property
-    def rect(self):
+    def rect(self) -> pygame.Rect:
+        """10×14 collision rectangle at the civilian's position."""
         return pygame.Rect(self.x - 5, self.y, 10, 14)
 
 
 class EnemyGun:
-    def __init__(self, gid, x, ground_y):
+    """A stationary ground turret that fires aimed bullets at the helicopter.
+
+    Fires only when the helicopter is within GUN_RANGE, is not grounded,
+    and has not yet scrolled past the gun (off-camera left). Each gun has
+    GUN_MAX_HP health and can be destroyed by 3 bullets or 1 bomb.
+    Draws a green/red HP bar above itself.
+    """
+
+    def __init__(self, gid: int, x: float, ground_y: float):
+        """Initialise gun at (x, ground_y) with full HP.
+
+        Args:
+            gid: Unique gun ID (index into generation order).
+            x: World-x position.
+            ground_y: Y-coordinate of the terrain surface at x.
+        """
         self.gid = gid
         self.x = x
         self.y = ground_y - 20  # sits on ground
@@ -1048,7 +1242,26 @@ class EnemyGun:
         self.fire_cooldown = 0
         self.surface = make_enemy_gun_surface()
 
-    def update(self, heli_x, heli_y, heli_grounded, scroll_x):
+    def update(self, heli_x: float, heli_y: float, heli_grounded: bool,
+               scroll_x: float) -> EnemyBullet | None:
+        """Advance gun logic: decrement cooldown, maybe fire.
+
+        Fires an EnemyBullet aimed at (heli_x, heli_y) if all conditions met:
+            - Alive
+            - Helicopter within GUN_RANGE
+            - Helicopter not grounded
+            - Gun not scrolled past (self.x < scroll_x - 50)
+            - Cooldown elapsed (GUN_FIRE_INTERVAL frames)
+
+        Args:
+            heli_x: Helicopter world-x.
+            heli_y: Helicopter world-y.
+            heli_grounded: Whether the helicopter is grounded.
+            scroll_x: Current camera scroll offset.
+
+        Returns:
+            EnemyBullet | None: New bullet if fired, None otherwise.
+        """
         if not self.alive:
             return None
         if self.fire_cooldown > 0:
@@ -1066,14 +1279,16 @@ class EnemyGun:
                 return EnemyBullet(self.x, self.y - 10, heli_x, heli_y)
         return None
 
-    def take_damage(self, amount=1):
+    def take_damage(self, amount: int = 1) -> bool:
+        """Reduce HP by amount. Returns True if destroyed."""
         self.hp -= amount
         if self.hp <= 0:
             self.alive = False
             return True  # destroyed
         return False
 
-    def draw(self, screen, offset_x):
+    def draw(self, screen: pygame.Surface, offset_x: float) -> None:
+        """Render gun sprite and HP bar, offset by camera scroll."""
         if not self.alive:
             return
         sx = int(self.x - offset_x - 12)
@@ -1089,13 +1304,26 @@ class EnemyGun:
         pygame.draw.rect(screen, GREEN, (bx, by, int(bar_w * hp_ratio), bar_h))
 
     @property
-    def rect(self):
+    def rect(self) -> pygame.Rect:
+        """24×20 collision rectangle at the gun's position."""
         return pygame.Rect(self.x - 12, self.y, 24, 20)
 
 
 class Particle:
     """Simple pixel particle for engine exhaust, etc."""
-    def __init__(self, x, y, vx, vy, color, life=20, size=2):
+    def __init__(self, x: float, y: float, vx: float, vy: float,
+                 color: tuple[int, int, int], life: int = 20, size: int = 2):
+        """Initialise particle with position, velocity, colour, and lifetime.
+
+        Args:
+            x: World-x position.
+            y: World-y position.
+            vx: Horizontal velocity (px/frame).
+            vy: Vertical velocity (px/frame).
+            color: RGB tuple for particle colour.
+            life: Frames until the particle expires (default 20).
+            size: Pixel size (width/height, default 2).
+        """
         self.x = x
         self.y = y
         self.vx = vx
@@ -1106,14 +1334,16 @@ class Particle:
         self.size = size
         self.alive = True
 
-    def update(self):
+    def update(self) -> None:
+        """Advance particle: move, decrement life, kill when expired."""
         self.x += self.vx
         self.y += self.vy
         self.life -= 1
         if self.life <= 0:
             self.alive = False
 
-    def draw(self, screen, offset_x):
+    def draw(self, screen: pygame.Surface, offset_x: float) -> None:
+        """Render particle as a small square that fades with remaining life."""
         if not self.alive:
             return
         alpha = int(255 * self.life / self.max_life)
@@ -1189,7 +1419,24 @@ def draw_hud(screen: pygame.Surface, heli: Helicopter, civilians: list[Any],
 # Main game
 # ---------------------------------------------------------------------------
 class Game:
+    """Main game class — state machine, update loop, rendering.
+
+    Owns all game entities (helicopter, civilians, enemy guns, projectiles,
+    particles, explosions) and coordinates their update/draw. Runs the
+    event loop and manages the state machine (TITLE → PLAYING → VICTORY/GAME_OVER).
+
+    All procedural art surfaces are pre-computed once; per-frame rendering
+    scrolls them according to the camera position.
+    """
+
     def __init__(self):
+        """Initialise Pygame, mixer, fonts, pre-compute assets, set initial state.
+
+        Loads VGZ background music (silent if no playable file found),
+        builds terrain, generates tree decoration positions, and starts
+        the title screen with music playing. Entities are created by
+        new_game() when the player presses SPACE.
+        """
         pygame.init()
         pygame.mixer.init(frequency=44100, size=-16, channels=1)
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -1257,6 +1504,14 @@ class Game:
         return trees
 
     def new_game(self):
+        """Reset all game entities and pick a random level theme.
+
+        Called when the player presses SPACE on the title screen.
+        Re-renders terrain, mountains, hills, and clouds with the chosen
+        theme palette. Spawns the helicopter at default position, places
+        8 civilians at randomised positions, and 5 enemy guns at fixed
+        landmark positions.
+        """
         random.seed()
         # Pick a random theme and regenerate rendered surfaces
         self.theme = random.choice(list(THEMES.keys()))
@@ -1309,7 +1564,20 @@ class Game:
             gy = get_ground_y(self.terrain, gx)
             self.enemy_guns.append(EnemyGun(i, gx, gy))
 
-    def handle_events(self):
+    def handle_events(self) -> bool:
+        """Process the Pygame event queue for one frame.
+
+        Dispatches based on self.state:
+            TITLE:      SPACE → new_game(), PLAYING state, start engine.
+            PLAYING:    SPACE → shoot bullet(s); M → drop bomb.
+            VICTORY/    SPACE → reset to TITLE, stop all sounds, restart
+            GAME_OVER:          background music for the title screen.
+
+        ESC or window close always returns False to quit the game.
+
+        Returns:
+            bool: False if the game should quit, True otherwise.
+        """
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
@@ -1349,7 +1617,24 @@ class Game:
 
         return True
 
-    def update(self):
+    def update(self) -> None:
+        """Advance the game simulation by one frame.
+
+        Always updates explosions and particles (so death/victory animations
+        play out), then if PLAYING:
+            1. Helicopter movement + cooldowns
+            2. Engine exhaust particles
+            3. Camera auto-scroll
+            4. Bullet/enemy-bullet/bomb updates
+            5. Bomb → explosion + AOE damage
+            6. Enemy guns fire toward helicopter
+            7. Bullet ↔ enemy-gun collisions
+            8. Enemy-bullet ↔ helicopter collisions
+            9. Civilian AI (waiting → running → boarding)
+            10. Helicopter death check → GAME_OVER
+            11. All-onboard victory check → return + helipad landing
+             12. Helipad hint timer
+        """
         # Always update explosions and particles (for game over / victory animations)
         for exp in self.explosions[:]:
             exp.update()
@@ -1537,10 +1822,19 @@ class Game:
         elif heli_screen_x > SCREEN_WIDTH - 5:
             self.scroll_x = min(max_scroll, heli.x - (SCREEN_WIDTH - 5))
 
-    def _spawn_explosion(self, x, y):
+    def _spawn_explosion(self, x: float, y: float) -> None:
+        """Create an explosion animation at world coordinates (x, y)."""
         self.explosions.append(Explosion(x, y, self.explosion_frames))
 
-    def draw(self):
+    def draw(self) -> None:
+        """Render the entire current frame based on state.
+
+        Clears the screen (SKY_BLUE), then dispatches to:
+            TITLE:      _draw_title()
+            PLAYING:    _draw_game() + HUD + optional helipad hint
+            VICTORY:    _draw_game() + HUD + _draw_overlay("VICTORY!")
+            GAME_OVER:  _draw_game() + HUD + _draw_overlay("GAME OVER")
+        """
         self.screen.fill(SKY_BLUE)
 
         if self.state == GameState.TITLE:
@@ -1563,7 +1857,16 @@ class Game:
 
         pygame.display.flip()
 
-    def _draw_title(self):
+    def _draw_title(self) -> None:
+        """Render the animated title screen.
+
+        Elements:
+            - Dark gradient background
+            - 80 twinkling stars (sinusoidal brightness with per-star phase)
+            - "HELI RESCUE" title with cycling hue (RGB sine waves)
+            - Glint sweep: a white highlight band sliding across the title
+            - Subtitle, controls list, blinking "SPACE TO START"
+        """
         # Background
         for y in range(0, SCREEN_HEIGHT, 4):
             shade = max(10, 40 - y // 20)
@@ -1634,7 +1937,25 @@ class Game:
             start_text = self.font.render("SPACE TO START", True, YELLOW)
             self.screen.blit(start_text, (SCREEN_WIDTH // 2 - start_text.get_width() // 2, 480))
 
-    def _draw_game(self):
+    def _draw_game(self) -> None:
+        """Render the playing field: parallax layers, terrain, entities.
+
+        Draw order (back to front):
+            1. Clouds (0.15× scroll, tiled)
+            2. Mountains (0.25× scroll, tiled)
+            3. Hills (0.5× scroll, tiled)
+            4. Terrain surface (1× scroll, clipped to visible area)
+            5. Base helipad + building (if visible)
+            6. Decoration trees
+            7. Enemy guns
+            8. Civilians
+            9. Helicopter
+            10. Player bullets
+            11. Enemy bullets
+            12. Bombs
+            13. Explosions
+            14. Particles
+        """
         scroll = self.scroll_x
 
         # --- Draw parallax layers ---
@@ -1790,7 +2111,12 @@ class Game:
             restart = self.font.render("Press SPACE to continue", True, YELLOW)
             self.screen.blit(restart, (SCREEN_WIDTH // 2 - restart.get_width() // 2, 400))
 
-    def run(self):
+    def run(self) -> None:
+        """Main game loop: process events, update state, render frame.
+
+        Runs at FPS frames per second. Increments frame_count each tick.
+        Exits when handle_events() returns False (ESC or window close).
+        """
         running = True
         while running:
             running = self.handle_events()
