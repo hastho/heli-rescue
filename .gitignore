@@ -24,3 +24,7 @@ vgm_research.md
 
 # src/ contains third-party code (vgmparse) — exclude
 src/
+
+# Internal agent workflow files (not for public repo)
+AGENTS.md
+.opencode/
