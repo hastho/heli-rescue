@@ -812,15 +812,17 @@ class Bullet:
     def __init__(self, x, y):
         self.x = x
         self.y = y
-        self.vy = BULLET_SPEED  # downward toward ground targets
+        self.vx = BULLET_SPEED   # forward (rightward) — hit enemies ahead
+        self.vy = BULLET_SPEED   # downward — hit ground enemies
         self.alive = True
         self.surface = make_bullet_surface()
 
     def update(self):
         if not self.alive:
             return
+        self.x += self.vx
         self.y += self.vy
-        if self.y > SCREEN_HEIGHT:  # off bottom of screen
+        if self.y > SCREEN_HEIGHT or self.x > LEVEL_WIDTH:
             self.alive = False
 
     def draw(self, screen, offset_x):
