@@ -779,7 +779,7 @@ class Helicopter:
         if self.shoot_cooldown > 0:
             return None
         self.shoot_cooldown = SHOOT_COOLDOWN
-        return Bullet(self.x, self.y - self.h // 2)
+        return Bullet(self.x, self.bottom)  # spawn at helicopter bottom
 
     def drop_bomb(self):
         if self.bombs <= 0 or self.bomb_cooldown > 0:
@@ -812,7 +812,7 @@ class Bullet:
     def __init__(self, x, y):
         self.x = x
         self.y = y
-        self.vy = -BULLET_SPEED
+        self.vy = BULLET_SPEED  # downward toward ground targets
         self.alive = True
         self.surface = make_bullet_surface()
 
@@ -820,7 +820,7 @@ class Bullet:
         if not self.alive:
             return
         self.y += self.vy
-        if self.y < 0:
+        if self.y > SCREEN_HEIGHT:  # off bottom of screen
             self.alive = False
 
     def draw(self, screen, offset_x):
