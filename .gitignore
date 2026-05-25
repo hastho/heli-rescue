@@ -29,3 +29,6 @@ src/
 AGENTS.md
 WORKFLOW_STATE.md
 .opencode/
+
+# Copyrighted VGZ music files -- provide your own (see tunes/README.md)
+tunes/*.vgz
