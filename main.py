@@ -1261,6 +1261,7 @@ class Game:
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Heli Rescue")
         self.clock = pygame.time.Clock()
+        self.frame_count = 0
         self.font = pygame.font.Font(None, 24)
         self.big_font = pygame.font.Font(None, 52)
         self.small_font = pygame.font.Font(None, 18)
@@ -1627,17 +1628,32 @@ class Game:
             pygame.draw.rect(self.screen, (shade, shade, shade + 10),
                              (0, y, SCREEN_WIDTH, 4))
 
-        # Stars
-        random.seed(789)
-        for _ in range(80):
-            sx = random.randint(0, SCREEN_WIDTH)
-            sy = random.randint(0, 300)
-            bright = random.randint(100, 255)
+        # Stars (twinkling via palette-style brightness animation)
+        if not hasattr(self, '_stars'):
+            random.seed(789)
+            self._stars = [(random.randint(0, SCREEN_WIDTH), random.randint(0, 300),
+                            random.uniform(0, math.pi * 2)) for _ in range(80)]
+        for sx, sy, phase in self._stars:
+            bright = int(100 + 155 * (0.5 + 0.5 * math.sin(self.frame_count * 0.03 + phase)))
             self.screen.set_at((sx, sy), (bright, bright, bright))
 
-        # Title
-        title = self.big_font.render("HELI RESCUE", True, YELLOW)
+        # Title (palette rotation: colour cycles through hues)
+        t = self.frame_count * 0.025
+        title_col = (int(128 + 127 * math.sin(t)),
+                     int(128 + 127 * math.sin(t + 2.094)),
+                     int(128 + 127 * math.sin(t + 4.188)))
+        title = self.big_font.render("HELI RESCUE", True, title_col)
         self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 100))
+
+        # Glint sweep: bright band sliding across the title
+        tw = title.get_width()
+        glint_phase = (self.frame_count * 2) % (tw + 60) - 30
+        glint_x = SCREEN_WIDTH // 2 - tw // 2 + glint_phase
+        glint = pygame.Surface((30, title.get_height()), pygame.SRCALPHA)
+        for gx in range(30):
+            alpha = int(200 * max(0, 1 - abs(gx - 15) / 20))
+            pygame.draw.line(glint, (255, 255, 255, alpha), (gx, 0), (gx, title.get_height()))
+        self.screen.blit(glint, (glint_x, 100))
 
         # Subtitle
         sub = self.small_font.render("~ 8-Bit Retro ~", True, WHITE)
@@ -1836,6 +1852,7 @@ class Game:
             running = self.handle_events()
             self.update()
             self.draw()
+            self.frame_count += 1
             self.clock.tick(FPS)
         pygame.quit()
         sys.exit()
