@@ -1,0 +1,1849 @@
+"""
+Heli Rescue — 8-bit side-scrolling helicopter rescue game
+
+Controls:
+  W A S D  — Move helicopter
+  SPACE    — Shoot (bullets go upward)
+  M        — Drop bomb (falls straight down)
+  SPACE    — Start / Restart
+
+Objective:
+  Pick up all civilians, return to base, avoid enemy guns.
+"""
+
+from __future__ import annotations
+
+import pygame
+import math
+import random
+import sys
+from enum import Enum
+import gzip
+import struct
+import array
+import os
+import glob
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 600
+FPS = 60
+
+LEVEL_WIDTH = 4000
+
+# Colours (8-bit retro palette)
+SKY_BLUE = (100, 180, 255)
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+RED = (220, 40, 40)
+DARK_RED = (160, 20, 20)
+GREEN = (60, 180, 60)
+DARK_GREEN = (20, 120, 20)
+OLIVE = (100, 130, 40)
+BROWN = (140, 80, 30)
+DARK_BROWN = (100, 55, 15)
+GRAY = (140, 140, 140)
+DARK_GRAY = (80, 80, 80)
+YELLOW = (240, 220, 40)
+ORANGE = (240, 140, 20)
+PURPLE = (140, 60, 180)
+BEIGE = (210, 180, 140)
+
+# Helicopter
+HELI_SPEED = 5
+HELI_SIZE = (36, 26)
+HELI_MAX_HP = 3
+HELI_MAX_BOMBS = 5
+SHOOT_COOLDOWN = 8  # frames
+BOMB_COOLDOWN = 20
+
+# Auto-scroll
+SCROLL_NORMAL = 2        # px / frame right
+SCROLL_BACKTRACK = -1    # px / frame left  (backtrack)
+SCROLL_RETURN = -4       # px / frame left  (return to base)
+BACKTRACK_ZONE = 120     # px from left edge
+
+# Bullets & bombs
+BULLET_SPEED = 10
+ENEMY_BULLET_SPEED = 4
+BOMB_FALL_SPEED = 6
+EXPLOSION_DURATION = 15  # frames
+
+# Civilians
+CIVILIAN_RUN_SPEED = 2
+CIVILIAN_AGGRO_RANGE = 120
+
+# Enemy guns
+GUN_RANGE = 300
+GUN_FIRE_INTERVAL = 45   # frames
+GUN_MAX_HP = 3
+GUN_BULLET_SPEED = 4
+
+# Terrain
+TERRAIN_SEGMENT = 20     # px per height entry
+NUM_SEGMENTS = LEVEL_WIDTH // TERRAIN_SEGMENT  # 200
+
+# ---------------------------------------------------------------------------
+# Game states
+# ---------------------------------------------------------------------------
+class GameState(Enum):
+    TITLE = 0
+    PLAYING = 1
+    VICTORY = 2
+    GAME_OVER = 3
+
+
+# ---------------------------------------------------------------------------
+# Sound helpers
+# ---------------------------------------------------------------------------
+def _make_sound(samples: list[int], sample_rate: int = 22050, volume: float = 0.3) -> pygame.mixer.Sound:
+    """Create a pygame Sound from a list of 16-bit integer samples."""
+    buf = array.array('h', samples)
+    snd = pygame.mixer.Sound(buffer=buf.tobytes())
+    snd.set_volume(volume)
+    return snd
+
+
+def _square_wave(freq: float, duration_ms: float, sample_rate: int = 22050) -> list[int]:
+    """Generate square wave samples."""
+    n_samples = int(sample_rate * duration_ms / 1000)
+    period = sample_rate // max(freq, 1)
+    return [
+        int(16000 if (i % period) < period // 2 else -16000)
+        for i in range(n_samples)
+    ]
+
+
+def _white_noise(duration_ms: float, sample_rate: int = 22050) -> list[int]:
+    n_samples = int(sample_rate * duration_ms / 1000)
+    return [random.randint(-16000, 16000) for _ in range(n_samples)]
+
+
+def _sine_wave(freq: float, duration_ms: float, sample_rate: int = 22050) -> list[int]:
+    n_samples = int(sample_rate * duration_ms / 1000)
+    return [
+        int(16000 * math.sin(2 * math.pi * freq * i / sample_rate))
+        for i in range(n_samples)
+    ]
+
+
+def init_sounds() -> dict[str, pygame.mixer.Sound]:
+    """Pre-compute and return dict of sound effects."""
+    sounds = {}
+    sr = 44100
+
+    # Engine hum — low square wave (looping, started when entering PLAYING state)
+    eng = _square_wave(80, 200, sr)
+    sounds['engine'] = _make_sound(eng, sr, 0.04)
+
+    # Shoot — short noise
+    sounds['shoot'] = _make_sound(_white_noise(40, sr), sr, 0.15)
+
+    # Bomb drop — descending tone
+    bomb_s = []
+    for i in range(int(sr * 200 / 1000)):
+        t = i / sr
+        freq = 600 - (600 - 80) * (t / 0.2)
+        val = int(12000 * math.sin(2 * math.pi * freq * t))
+        bomb_s.append(val)
+    sounds['bomb_drop'] = _make_sound(bomb_s, sr, 0.2)
+
+    # Explosion — white noise burst
+    sounds['explosion'] = _make_sound(_white_noise(200, sr), sr, 0.3)
+
+    # Civilian pickup — ascending beep
+    pickup_s = []
+    for i in range(int(sr * 120 / 1000)):
+        t = i / sr
+        freq = 500 + 1000 * (t / 0.12)
+        val = int(14000 * math.sin(2 * math.pi * freq * t))
+        pickup_s.append(val)
+    sounds['pickup'] = _make_sound(pickup_s, sr, 0.2)
+
+    # Damage — low buzz
+    sounds['damage'] = _make_sound(_square_wave(80, 150, sr), sr, 0.2)
+
+    # Victory jingle
+    jingle_s = []
+    notes = [523, 659, 784, 1047]  # C5 E5 G5 C6
+    for freq in notes:
+        for i in range(int(sr * 100 / 1000)):
+            t = i / sr
+            val = int(14000 * math.sin(2 * math.pi * freq * t))
+            # fade out
+            env = 1.0 - i / (sr * 0.1)
+            jingle_s.append(int(val * env))
+    sounds['victory'] = _make_sound(jingle_s, sr, 0.3)
+
+    return sounds
+
+
+# ---------------------------------------------------------------------------
+# VGM/VGZ parser for YM3812 (OPL2) music playback via ymfm-py
+# ---------------------------------------------------------------------------
+
+def _parse_vgm(raw_bytes: bytes) -> tuple[int, list[tuple[int, int, int]]]:
+    """Parse VGM command stream from raw bytes (decompressed VGZ or raw VGM).
+
+    Returns (total_samples, event_list) where:
+    - total_samples: number of samples at 44100 Hz
+    - event_list: [(sample_pos_44100, reg, val), ...] for YM3812 writes
+    """
+    assert raw_bytes[0:4] == b'Vgm ', "Not a VGM file"
+
+    # Scan forward from offset 0x40 to find first real command byte,
+    # handling v1.50+ where the data offset field may point inside the header.
+    data_offset = 0x40
+    for scan in range(0x40, min(len(raw_bytes), 0x200)):
+        b = raw_bytes[scan]
+        if b in (0x5A, 0x5B, 0x52, 0x53, 0x80, 0x50, 0x61, 0x62, 0x63, 0x66) or (0x70 <= b <= 0x7F):
+            data_offset = scan
+            break
+
+    events = []
+    pos = data_offset
+    sample = 0  # sample counter at 44100 Hz
+
+    while pos < len(raw_bytes) - 2:
+        byte = raw_bytes[pos]
+
+        if 0x70 <= byte <= 0x7F:
+            # Wait (byte & 0x0F) + 1 samples
+            sample += (byte & 0x0F) + 1
+            pos += 1
+        elif byte == 0x61:
+            # Wait 16-bit sample count
+            sample += struct.unpack_from('<H', raw_bytes, pos + 1)[0]
+            pos += 3
+        elif byte == 0x62:
+            sample += 735   # 1/60 sec at 44100 Hz
+            pos += 1
+        elif byte == 0x63:
+            sample += 882   # 1/50 sec at 44100 Hz
+            pos += 1
+        elif byte == 0x5A:
+            # YM3812 register write: reg, val
+            reg = raw_bytes[pos + 1]
+            val = raw_bytes[pos + 2]
+            events.append((sample, reg, val))
+            pos += 3
+        elif byte == 0x66:
+            # End of stream
+            break
+        elif byte == 0x67:
+            # Data block: type(1) + size(4) + data(size)
+            blk_size = struct.unpack_from('<I', raw_bytes, pos + 2)[0]
+            pos += 6 + blk_size
+        elif byte == 0x68:
+            sz = struct.unpack_from('<H', raw_bytes, pos + 4)[0]
+            pos += 6 + sz
+        elif byte in (0x80, 0x50):
+            pos += 2  # SN76489 / PSG
+        elif byte in (0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5B, 0x5C, 0x5D):
+            pos += 3  # Other chip writes (YM2612, YM2151, etc.)
+        elif byte in (0x90, 0x91):
+            pos += 9  # DAC stream
+        elif byte == 0x92:
+            pos += 5
+        elif byte in (0x00, 0x30):
+            pos += 1  # NOP / YM2612 DAC
+        else:
+            pos += 1  # Skip unknown, keep parsing
+
+    return sample, events
+
+
+def _render_vgz(filepath: str, volume: float = 0.5, max_duration: int = 120) -> pygame.mixer.Sound | None:
+    """Render a VGZ or VGM file to a pygame.mixer.Sound using ymfm-py.
+
+    Returns a pygame.mixer.Sound or None on any error.
+    """
+    try:
+        import ymfm
+    except ImportError:
+        print("ymfm-py not installed. Install with: pip install ymfm-py")
+        return None
+
+    try:
+        with open(filepath, 'rb') as f:
+            raw = f.read()
+
+        # Decompress VGZ (gzip) if needed; VGM passes through
+        if filepath.lower().endswith('.vgz'):
+            try:
+                vgm_data = gzip.decompress(raw)
+            except Exception:
+                print(f"  Not a valid gzip file: {filepath}")
+                return None
+        else:
+            vgm_data = raw
+
+        total_samples, events = _parse_vgm(vgm_data)
+        if total_samples <= 0 and events:
+            total_samples = events[-1][0] + 44100  # 1s after last event
+
+        # Cap duration
+        sample_count = min(total_samples, max_duration * 44100)
+        if sample_count <= 0:
+            return None
+
+        # Create YM3812 chip and render
+        chip = ymfm.YM3812(clock=3579545)
+        chip.reset()
+
+        # Render with precise event-boundary timing
+        output = []
+        event_idx = 0
+        pos = 0
+
+        while pos < sample_count:
+            # Process all events at or before this exact position
+            while event_idx < len(events) and events[event_idx][0] <= pos:
+                _, reg, val = events[event_idx]
+                chip.write(0, reg)
+                chip.write(1, val)
+                event_idx += 1
+
+            # Find the next event position (or end of audio)
+            next_event = events[event_idx][0] if event_idx < len(events) else sample_count
+            chunk_end = min(next_event, sample_count)
+
+            if chunk_end > pos:
+                # Generate samples up to the next event boundary
+                chunk_samples = chip.generate(chunk_end - pos)
+                for i in range(chunk_end - pos):
+                    output.append(chunk_samples[i, 0])
+                pos = chunk_end
+            else:
+                pos += 1  # safety: avoid infinite loop if events align
+
+        # Normalize to 16-bit
+        if not output:
+            return None
+        max_val = max(abs(s) for s in output)
+        if max_val == 0:
+            return None
+
+        scale = min(32000.0 / max_val, 1.0)
+        s16 = array.array('h', [int(s * scale) for s in output])
+
+        snd = pygame.mixer.Sound(buffer=s16.tobytes())
+        snd.set_volume(volume)
+        return snd
+
+    except Exception as e:
+        print(f"  Error rendering {filepath}: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# OPL2-style FM synthesis music
+# ---------------------------------------------------------------------------
+# Uses 2-operator FM synthesis (carrier + modulator) to produce a retro
+# OPL2/AdLib-style background music loop. Everything is generated in code.
+
+NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+def note_to_freq(name: str, octave: int) -> float:
+    """Convert note name (e.g. 'A', 'C#') and octave number to frequency in Hz (A4=440)."""
+    semitones = NOTE_NAMES.index(name.upper()) + (octave - 4) * 12 - 9
+    return 440.0 * (2 ** (semitones / 12.0))
+
+
+def fm_note_samples(freq: float, duration: float, sr: int = 22050, ratio: float = 1.0,
+                    index: float = 1.0, amp: float = 0.3, attack: float = 0.005,
+                    decay: float = 0.1, sustain: float = 0.7, release: float = 0.05) -> list[int]:
+    """
+    Generate 2-operator FM synthesis samples for one note (OPL2 style).
+
+    Parameters:
+        freq: carrier frequency (note pitch) in Hz
+        duration: note length in seconds
+        sr: sample rate
+        ratio: modulator_freq / carrier_freq  (OPL2 multiplier: 0.5, 1, 2, 3, 4...)
+        index: modulation index (higher = brighter/more metallic)
+        amp: amplitude (0-1)
+        attack/decay/sustain/release: ADSR envelope in seconds
+    """
+    n = int(sr * duration)
+    if n <= 0:
+        return []
+    samples = []
+    attack_s = int(sr * attack)
+    decay_s = int(sr * decay)
+    release_s = int(sr * release)
+    sustain_start = attack_s + decay_s
+    release_start = n - release_s
+
+    for i in range(n):
+        # ADSR envelope
+        if i < attack_s:
+            env = i / max(attack_s, 1)
+        elif i < sustain_start:
+            env = 1.0 - (1.0 - sustain) * (i - attack_s) / max(decay_s, 1)
+        elif i < release_start:
+            env = sustain
+        else:
+            env = sustain * (1.0 - (i - release_start) / max(release_s, 1))
+
+        # FM: sin(2π*fc*t + I * sin(2π*fm*t))
+        t = i / sr
+        phase_c = 2 * math.pi * freq * t
+        phase_m = 2 * math.pi * freq * ratio * t
+        val = math.sin(phase_c + index * math.sin(phase_m))
+        samples.append(int(16000 * env * val * amp))
+
+    return samples
+
+
+def generate_music_loop(bpm: int = 140, sr: int = 22050) -> list[int]:
+    """
+    Generate an OPL2-style background music loop.
+    Returns a list of 16-bit integer samples (mono).
+
+    Composition: heroic/adventure theme in A minor.
+    8-bar loop, 4/4 time, 32 beats total.
+    """
+    beat = 60.0 / bpm  # seconds per beat
+
+    # Instrument presets (OPL2-style 2-op FM patches)
+    # Each defines (ratio, index, amp, attack, decay, sustain, release)
+    patches = {
+        'bass':   {'ratio': 0.5, 'index': 4.0, 'amp': 0.28,
+                   'attack': 0.005, 'decay': 0.12, 'sustain': 0.2, 'release': 0.04},
+        'pad':    {'ratio': 1.0, 'index': 1.5, 'amp': 0.14,
+                   'attack': 0.04, 'decay': 0.2, 'sustain': 0.8, 'release': 0.08},
+        'lead':   {'ratio': 2.0, 'index': 3.0, 'amp': 0.18,
+                   'attack': 0.01, 'decay': 0.1, 'sustain': 0.7, 'release': 0.05},
+        'arp':    {'ratio': 1.0, 'index': 2.0, 'amp': 0.10,
+                   'attack': 0.005, 'decay': 0.08, 'sustain': 0.3, 'release': 0.03},
+    }
+
+    # --- Compose the song ---
+    # Each entry: (patch_name, note_name, octave, start_beat, duration_beats)
+    total_beats = 32  # 8 bars
+    total_dur = total_beats * beat
+    total_samples = int(sr * total_dur)
+
+    # Bass line: roots on beat 1 & 3 (half notes, staccato)
+    bass = [
+        # Bar 1-2: Am vamp
+        ('bass', 'A', 2, 0, 0.9), ('bass', 'A', 2, 1, 0.9),
+        ('bass', 'E', 2, 2, 0.9), ('bass', 'E', 2, 3, 0.9),
+        ('bass', 'F', 2, 4, 0.9), ('bass', 'F', 2, 5, 0.9),
+        ('bass', 'E', 2, 6, 0.9), ('bass', 'E', 2, 7, 0.9),
+        # Bar 3-4: Dm → Am → G → Bdim walk-up
+        ('bass', 'D', 2, 8, 0.9), ('bass', 'D', 2, 9, 0.9),
+        ('bass', 'A', 2, 10, 0.9), ('bass', 'A', 2, 11, 0.9),
+        ('bass', 'C', 2, 12, 0.9), ('bass', 'C', 2, 13, 0.9),
+        ('bass', 'B', 2, 14, 0.9), ('bass', 'B', 2, 15, 0.9),
+    ]
+
+    # Pad chords: sustained triads (2 beats each)
+    pad = [
+        # Am vamp
+        ('pad', 'A', 3, 0, 4.0),
+        ('pad', 'E', 3, 4, 4.0),
+        # Dm → Am → G → Em
+        ('pad', 'D', 3, 8, 2.0),
+        ('pad', 'A', 3, 10, 2.0),
+        ('pad', 'G', 3, 12, 2.0),
+        ('pad', 'E', 3, 14, 2.0),
+        # Repeat with F → G
+        ('pad', 'A', 3, 16, 2.0),
+        ('pad', 'C', 3, 18, 2.0),
+        ('pad', 'F', 3, 20, 2.0),
+        ('pad', 'G', 3, 22, 2.0),
+        # Dm → F → E → Am
+        ('pad', 'D', 3, 24, 2.0),
+        ('pad', 'F', 3, 26, 2.0),
+        ('pad', 'E', 3, 28, 2.0),
+        ('pad', 'A', 3, 30, 2.0),
+    ]
+
+    # Lead melody: eighth & quarter notes
+    lead = [
+        # Phrase 1 (2 bars)
+        ('lead', 'A', 4, 0, 0.4), ('lead', 'C', 5, 0.5, 0.4),
+        ('lead', 'E', 5, 1.0, 0.4), ('lead', 'A', 5, 1.5, 0.4),
+        ('lead', 'E', 5, 2.0, 0.4), ('lead', 'C', 5, 2.5, 0.4),
+        ('lead', 'A', 4, 3.0, 0.4), ('lead', 'E', 4, 3.5, 0.4),
+        # Phrase 2 (2 bars)
+        ('lead', 'A', 4, 4.0, 0.4), ('lead', 'C', 5, 4.5, 0.4),
+        ('lead', 'E', 5, 5.0, 0.4), ('lead', 'G', 5, 5.5, 0.4),
+        ('lead', 'F', 5, 6.0, 0.6), ('lead', 'E', 5, 6.75, 0.6),
+        ('lead', 'D', 5, 7.5, 0.4),
+        # Phrase 3 (2 bars)
+        ('lead', 'A', 4, 8.0, 0.4), ('lead', 'C', 5, 8.5, 0.4),
+        ('lead', 'E', 5, 9.0, 0.4), ('lead', 'A', 5, 9.5, 0.4),
+        ('lead', 'G', 5, 10.0, 0.4), ('lead', 'F', 5, 10.5, 0.4),
+        ('lead', 'E', 5, 11.0, 0.4), ('lead', 'D', 5, 11.5, 0.4),
+        # Phrase 4 (2 bars)
+        ('lead', 'C', 5, 12.0, 0.4), ('lead', 'E', 5, 12.5, 0.4),
+        ('lead', 'G', 5, 13.0, 0.4), ('lead', 'B', 5, 13.5, 0.4),
+        ('lead', 'A', 5, 14.0, 0.6), ('lead', 'G', 5, 14.75, 0.6),
+        ('lead', 'E', 5, 15.5, 0.4),
+        # Phrase 5-8: repeat (loop)
+        ('lead', 'A', 4, 16, 0.4), ('lead', 'C', 5, 16.5, 0.4),
+        ('lead', 'E', 5, 17.0, 0.4), ('lead', 'A', 5, 17.5, 0.4),
+        ('lead', 'E', 5, 18.0, 0.4), ('lead', 'C', 5, 18.5, 0.4),
+        ('lead', 'A', 4, 19.0, 0.4), ('lead', 'E', 4, 19.5, 0.4),
+        ('lead', 'A', 4, 20.0, 0.4), ('lead', 'C', 5, 20.5, 0.4),
+        ('lead', 'E', 5, 21.0, 0.4), ('lead', 'G', 5, 21.5, 0.4),
+        ('lead', 'F', 5, 22.0, 0.6), ('lead', 'E', 5, 22.75, 0.6),
+        ('lead', 'D', 5, 23.5, 0.4),
+        ('lead', 'A', 4, 24.0, 0.4), ('lead', 'C', 5, 24.5, 0.4),
+        ('lead', 'E', 5, 25.0, 0.4), ('lead', 'A', 5, 25.5, 0.4),
+        ('lead', 'G', 5, 26.0, 0.4), ('lead', 'F', 5, 26.5, 0.4),
+        ('lead', 'E', 5, 27.0, 0.4), ('lead', 'D', 5, 27.5, 0.4),
+        ('lead', 'C', 5, 28.0, 0.4), ('lead', 'E', 5, 28.5, 0.4),
+        ('lead', 'G', 5, 29.0, 0.4), ('lead', 'B', 5, 29.5, 0.4),
+        ('lead', 'A', 5, 30.0, 0.6), ('lead', 'G', 5, 30.75, 0.6),
+        ('lead', 'E', 5, 31.5, 0.4),
+    ]
+
+    # Arpeggio: rapid chord tones (adds energy)
+    arp = [
+        ('arp', 'A', 4, 0, 0.2), ('arp', 'C', 5, 0.2, 0.2),
+        ('arp', 'E', 5, 0.4, 0.2), ('arp', 'A', 5, 0.6, 0.2),
+        ('arp', 'A', 4, 1.0, 0.2), ('arp', 'C', 5, 1.2, 0.2),
+        ('arp', 'E', 5, 1.4, 0.2), ('arp', 'A', 5, 1.6, 0.2),
+        ('arp', 'G', 4, 2.0, 0.2), ('arp', 'B', 4, 2.2, 0.2),
+        ('arp', 'D', 5, 2.4, 0.2), ('arp', 'G', 5, 2.6, 0.2),
+        ('arp', 'E', 4, 3.0, 0.2), ('arp', 'G', 4, 3.2, 0.2),
+        ('arp', 'B', 4, 3.4, 0.2), ('arp', 'E', 5, 3.6, 0.2),
+        # Continue through other bars
+        ('arp', 'D', 4, 4.0, 0.2), ('arp', 'F', 4, 4.2, 0.2),
+        ('arp', 'A', 4, 4.4, 0.2), ('arp', 'D', 5, 4.6, 0.2),
+        ('arp', 'C', 4, 5.0, 0.2), ('arp', 'E', 4, 5.2, 0.2),
+        ('arp', 'G', 4, 5.4, 0.2), ('arp', 'C', 5, 5.6, 0.2),
+        ('arp', 'B', 3, 6.0, 0.2), ('arp', 'D', 4, 6.2, 0.2),
+        ('arp', 'F', 4, 6.4, 0.2), ('arp', 'B', 4, 6.6, 0.2),
+        ('arp', 'A', 3, 7.0, 0.2), ('arp', 'C', 4, 7.2, 0.2),
+        ('arp', 'E', 4, 7.4, 0.2), ('arp', 'A', 4, 7.6, 0.2),
+    ]
+
+    # Mix all parts into the sample buffer
+    mixed = [0.0] * total_samples
+
+    def render_part(part_list):
+        for patch_name, note_name, octave, start_beat, dur_beats in part_list:
+            p = patches[patch_name]
+            freq = note_to_freq(note_name, octave)
+            note_dur = dur_beats * beat
+            start_sample = int(start_beat * beat * sr)
+            samples = fm_note_samples(
+                freq, note_dur, sr,
+                ratio=p['ratio'], index=p['index'], amp=p['amp'],
+                attack=p['attack'], decay=p['decay'],
+                sustain=p['sustain'], release=p['release']
+            )
+            for i, s in enumerate(samples):
+                idx = start_sample + i
+                if idx < total_samples:
+                    mixed[idx] += s
+
+    render_part(bass)
+    render_part(pad)
+    render_part(lead)
+    render_part(arp)
+
+    # Normalize to 16-bit range, preventing clipping
+    max_val = max(abs(s) for s in mixed) if mixed else 1
+    scale = 28000.0 / max(max_val, 1)
+    result = [int(s * scale) for s in mixed]
+    return result
+
+
+def _generate_fallback_music() -> pygame.mixer.Sound | None:
+    """Generate OPL2-style background music (fallback if VGZ unavailable)."""
+    samples = generate_music_loop(bpm=140, sr=44100)
+    snd = _make_sound(samples, 44100, 0.4)
+    return snd
+
+def init_music() -> pygame.mixer.Sound | None:
+    """Try to load VGZ/VGM music from tunes/ directory, fall back to generated FM."""
+    tunes_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tunes')
+    if os.path.isdir(tunes_dir):
+        # Search for .vgz and .vgm files
+        for ext in ('*.vgz', '*.vgm'):
+            pattern = os.path.join(tunes_dir, ext)
+            for path in sorted(glob.glob(pattern)):
+                print(f"Loading VGZ/VGM: {path}")
+                snd = _render_vgz(path)
+                if snd is not None:
+                    print(f"  Successfully loaded ({snd.get_length():.1f}s)")
+                    return snd
+                print(f"  Failed, trying next...")
+
+    print("No VGZ/VGM files found, using generated FM music")
+    return _generate_fallback_music()
+
+
+# ---------------------------------------------------------------------------
+# Pixel-art asset generation
+# ---------------------------------------------------------------------------
+def make_helicopter_surface() -> pygame.Surface:
+    """Draw a side-view pixel-art helicopter."""
+    w, h = HELI_SIZE
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    # Main body (olive)
+    body_rect = pygame.Rect(4, 8, 28, 12)
+    pygame.draw.ellipse(surf, OLIVE, body_rect)
+    # Tail
+    pygame.draw.rect(surf, OLIVE, (28, 10, 8, 6))
+    # Tail fin
+    pts = [(36, 10), (36, 16), (32, 13)]
+    pygame.draw.polygon(surf, DARK_GREEN, pts)
+    # Cockpit window
+    pygame.draw.ellipse(surf, SKY_BLUE, (8, 10, 10, 7))
+    # Rotor shaft
+    pygame.draw.rect(surf, DARK_GRAY, (14, 3, 2, 5))
+    # Rotor blades
+    pygame.draw.rect(surf, GRAY, (4, 1, 22, 3))
+    pygame.draw.rect(surf, DARK_GRAY, (4, 2, 22, 1))
+    # Skids
+    pygame.draw.rect(surf, DARK_GRAY, (6, 20, 20, 2))
+    pygame.draw.rect(surf, DARK_GRAY, (8, 22, 16, 2))
+    return surf
+
+
+def make_civilian_surface() -> pygame.Surface:
+    """Draw a tiny pixel person."""
+    surf = pygame.Surface((10, 14), pygame.SRCALPHA)
+    # Head
+    surf.set_at((4, 0), BEIGE)
+    surf.set_at((5, 0), BEIGE)
+    surf.set_at((4, 1), BEIGE)
+    surf.set_at((5, 1), BEIGE)
+    # Body
+    pygame.draw.rect(surf, BLUE := (60, 60, 200), (3, 3, 4, 5))
+    # Legs
+    pygame.draw.rect(surf, DARK_GRAY, (3, 8, 2, 5))
+    pygame.draw.rect(surf, DARK_GRAY, (5, 8, 2, 5))
+    # Arms
+    pygame.draw.rect(surf, BEIGE, (1, 3, 2, 4))
+    pygame.draw.rect(surf, BEIGE, (7, 3, 2, 4))
+    return surf
+
+
+def make_enemy_gun_surface() -> pygame.Surface:
+    """Draw a stationary enemy gun turret."""
+    surf = pygame.Surface((24, 20), pygame.SRCALPHA)
+    # Base
+    pygame.draw.rect(surf, DARK_GRAY, (4, 12, 16, 8))
+    # Swivel
+    pygame.draw.circle(surf, GRAY, (12, 12), 5)
+    # Barrel
+    pygame.draw.rect(surf, DARK_RED, (8, 2, 4, 12))
+    # Muzzle
+    pygame.draw.rect(surf, YELLOW, (8, 0, 4, 3))
+    return surf
+
+
+def make_bullet_surface() -> pygame.Surface:
+    surf = pygame.Surface((4, 8), pygame.SRCALPHA)
+    pygame.draw.rect(surf, YELLOW, (0, 0, 4, 8))
+    pygame.draw.rect(surf, ORANGE, (1, 1, 2, 6))
+    return surf
+
+
+def make_enemy_bullet_surface() -> pygame.Surface:
+    surf = pygame.Surface((6, 6), pygame.SRCALPHA)
+    pygame.draw.circle(surf, RED, (3, 3), 3)
+    pygame.draw.circle(surf, YELLOW, (3, 3), 1)
+    return surf
+
+
+def make_bomb_surface() -> pygame.Surface:
+    surf = pygame.Surface((8, 12), pygame.SRCALPHA)
+    pygame.draw.ellipse(surf, DARK_GRAY, (0, 2, 8, 10))
+    pygame.draw.rect(surf, GRAY, (2, 0, 4, 3))
+    # Fins
+    pygame.draw.rect(surf, DARK_GRAY, (0, 2, 2, 2))
+    pygame.draw.rect(surf, DARK_GRAY, (6, 2, 2, 2))
+    return surf
+
+
+def make_explosion_surfaces() -> list[pygame.Surface]:
+    """Return list of frames for explosion animation."""
+    frames = []
+    for i in range(5):
+        r = 4 + i * 4
+        surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+        colors = [YELLOW, ORANGE, RED]
+        col = colors[min(i, len(colors) - 1)]
+        pygame.draw.circle(surf, col, (r, r), r)
+        if i > 1:
+            pygame.draw.circle(surf, ORANGE, (r, r), r - 2)
+        if i > 3:
+            pygame.draw.circle(surf, YELLOW, (r, r), r - 4)
+        frames.append(surf)
+    return frames
+
+
+def make_cloud_surface(w: int, h: int) -> pygame.Surface:
+    """Simple cloud shape."""
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    cx, cy = w // 2, h // 2
+    pygame.draw.ellipse(surf, (255, 255, 255, 200), (cx - 20, cy - 8, 40, 16))
+    pygame.draw.ellipse(surf, (255, 255, 255, 200), (cx - 12, cy - 14, 24, 20))
+    pygame.draw.ellipse(surf, (255, 255, 255, 200), (cx + 4, cy - 12, 20, 18))
+    return surf
+
+
+# ---------------------------------------------------------------------------
+# Level / Terrain
+# ---------------------------------------------------------------------------
+def build_terrain() -> list[int]:
+    """Return a list of ground heights (one per 20px segment, 200 entries)."""
+    seg = TERRAIN_SEGMENT
+    heights = []
+
+    # Define key points (segment_index, height)
+    # Height is y-coordinate of ground surface (higher = lower on screen)
+    base_h = 460
+    flat_h = 440
+    hill_peak = 360
+    valley_bottom = 480
+    mountain_peak = 300
+
+    key_points = [
+        (0, base_h),           # base
+        (20, base_h),          # end base flat
+        (30, flat_h - 10),     # transition
+        (45, flat_h),          # plains
+        (60, flat_h),          # plains end
+        (65, flat_h - 20),     # gentle bump
+        (75, flat_h),          # back to plains
+        (90, flat_h + 10),     #
+        (100, hill_peak + 20), # hills start
+        (110, hill_peak),      # hill peak
+        (120, hill_peak + 30), # valley
+        (130, hill_peak + 10), # hill
+        (140, flat_h + 10),    # transition
+        (150, flat_h),         #
+        (160, flat_h - 20),    # valley start
+        (170, valley_bottom),  # valley bottom
+        (180, valley_bottom),  # valley floor
+        (190, flat_h),         # rise
+        (200, flat_h),         #
+        (210, mountain_peak + 40),  # mountain start
+        (220, mountain_peak),       # peak
+        (230, mountain_peak + 30),  # saddle
+        (240, mountain_peak + 10),  # peak
+        (250, flat_h + 10),         # end mountains
+        (260, flat_h + 20),         # transition to end
+        (270, base_h),              # end plateau
+        (NUM_SEGMENTS - 1, base_h),
+    ]
+
+    # Interpolate between key points
+    for seg_idx in range(NUM_SEGMENTS):
+        # Find surrounding key points
+        prev_k, next_k = None, None
+        for k in key_points:
+            if k[0] <= seg_idx:
+                prev_k = k
+            if k[0] >= seg_idx and next_k is None:
+                next_k = k
+        if prev_k is None or next_k is None:
+            heights.append(base_h)
+            continue
+
+        if prev_k[0] == next_k[0]:
+            h = prev_k[1]
+        else:
+            t = (seg_idx - prev_k[0]) / (next_k[0] - prev_k[0])
+            h = prev_k[1] + (next_k[1] - prev_k[1]) * t
+        # Add small noise for organic feel
+        noise = random.randint(-3, 3)
+        heights.append(int(h) + noise)
+
+    return heights
+
+
+def get_ground_y(terrain: list[int], x: float) -> int:
+    """Return ground surface y-coordinate at world x."""
+    seg_idx = int(x / TERRAIN_SEGMENT)
+    seg_idx = max(0, min(seg_idx, len(terrain) - 1))
+    return terrain[seg_idx]
+
+
+def make_terrain_surface(terrain: list[int], level_width: int) -> pygame.Surface:
+    """Draw the full terrain surface (dirt + grass top)."""
+    surf = pygame.Surface((level_width, SCREEN_HEIGHT), pygame.SRCALPHA)
+    seg_w = TERRAIN_SEGMENT
+    for i, h in enumerate(terrain):
+        x = i * seg_w
+        # Dirt column
+        dirt_h = SCREEN_HEIGHT - h
+        rect = pygame.Rect(x, h, seg_w, dirt_h)
+        # Alternate brown shades for pixel effect
+        col = BROWN if (i // 2) % 2 == 0 else DARK_BROWN
+        pygame.draw.rect(surf, col, rect)
+        # Grass line on top
+        grass_col = GREEN if (i // 3) % 2 == 0 else DARK_GREEN
+        pygame.draw.rect(surf, grass_col, (x, h - 2, seg_w, 4))
+    return surf
+
+
+def make_mountains_surface(level_width: int) -> pygame.Surface:
+    """Far background mountains."""
+    surf = pygame.Surface((level_width, SCREEN_HEIGHT), pygame.SRCALPHA)
+    # Draw a few mountain shapes
+    peaks = [
+        (0, 50, 200),
+        (300, 35, 180),
+        (700, 45, 220),
+        (1200, 30, 160),
+        (1700, 40, 200),
+        (2200, 25, 150),
+        (2700, 50, 190),
+        (3200, 35, 170),
+        (3700, 45, 210),
+    ]
+    for px, py, pw in peaks:
+        pts = [(px, SCREEN_HEIGHT), (px + pw // 2, py), (px + pw, SCREEN_HEIGHT)]
+        pygame.draw.polygon(surf, (60, 70, 100), pts)
+        pygame.draw.polygon(surf, (50, 60, 90), pts, 1)
+    return surf
+
+
+def make_hills_surface(level_width: int) -> pygame.Surface:
+    """Mid-ground hills."""
+    surf = pygame.Surface((level_width, SCREEN_HEIGHT), pygame.SRCALPHA)
+    # Rolling hills
+    for x in range(0, level_width, 4):
+        h_val = 480 + int(30 * math.sin(x * 0.003)) + int(20 * math.sin(x * 0.007))
+        col = (40, 80, 40, 160) if (x // 8) % 2 == 0 else (30, 70, 30, 160)
+        pygame.draw.line(surf, col, (x, h_val), (x, SCREEN_HEIGHT))
+    return surf
+
+
+def make_clouds_surface(level_width: int) -> pygame.Surface:
+    """Static cloud layer for parallax."""
+    surf = pygame.Surface((level_width, SCREEN_HEIGHT // 2), pygame.SRCALPHA)
+    random.seed(42)
+    for _ in range(12):
+        cx = random.randint(0, level_width)
+        cy = random.randint(20, 180)
+        cw = random.randint(50, 90)
+        ch = random.randint(16, 28)
+        alpha = random.randint(140, 220)
+        col = (255, 255, 255, alpha)
+        pygame.draw.ellipse(surf, col, (cx, cy, cw, ch))
+        pygame.draw.ellipse(surf, col, (cx - 10, cy - 6, cw - 10, ch + 4))
+    return surf
+
+
+# ---------------------------------------------------------------------------
+# Entity classes
+# ---------------------------------------------------------------------------
+class Helicopter:
+    def __init__(self):
+        self.x = 150
+        self.y = 300
+        self.vx = 0
+        self.vy = 0
+        self.w, self.h = HELI_SIZE
+        self.hp = HELI_MAX_HP
+        self.max_hp = HELI_MAX_HP
+        self.bombs = HELI_MAX_BOMBS
+        self.grounded = False
+        self.shoot_cooldown = 0
+        self.bomb_cooldown = 0
+        self.passengers = []  # list of rescued civilian ids
+        self.invincible_timer = 0  # flash after hit
+        self.surface = make_helicopter_surface()
+        self.alive = True
+
+    @property
+    def rect(self):
+        return pygame.Rect(self.x - self.w // 2, self.y - self.h // 2, self.w, self.h)
+
+    @property
+    def bottom(self):
+        return self.y + self.h // 2
+
+    def update(self, keys, terrain):
+        if not self.alive:
+            return
+
+        self.vx = 0
+        self.vy = 0
+
+        if keys[pygame.K_w]:
+            self.vy = -HELI_SPEED
+        if keys[pygame.K_s]:
+            self.vy = HELI_SPEED
+        if keys[pygame.K_a]:
+            self.vx = -HELI_SPEED
+        if keys[pygame.K_d]:
+            self.vx = HELI_SPEED
+
+        # Apply velocity
+        self.x += self.vx
+        self.y += self.vy
+
+        # Ground collision
+        ground_y = get_ground_y(terrain, self.x)
+        if self.bottom >= ground_y:
+            self.y = ground_y - self.h // 2
+            self.grounded = True
+            self.vy = 0
+        else:
+            self.grounded = False
+
+        # Ceiling
+        if self.y - self.h // 2 < 80:
+            self.y = 80 + self.h // 2
+
+        # Left / right level bounds
+        if self.x - self.w // 2 < 0:
+            self.x = self.w // 2
+        if self.x + self.w // 2 > LEVEL_WIDTH:
+            self.x = LEVEL_WIDTH - self.w // 2
+
+        # Cooldowns
+        if self.shoot_cooldown > 0:
+            self.shoot_cooldown -= 1
+        if self.bomb_cooldown > 0:
+            self.bomb_cooldown -= 1
+        if self.invincible_timer > 0:
+            self.invincible_timer -= 1
+
+    def shoot(self):
+        if self.shoot_cooldown > 0:
+            return None
+        self.shoot_cooldown = SHOOT_COOLDOWN
+        return Bullet(self.x, self.y - self.h // 2)
+
+    def drop_bomb(self):
+        if self.bombs <= 0 or self.bomb_cooldown > 0:
+            return None
+        self.bombs -= 1
+        self.bomb_cooldown = BOMB_COOLDOWN
+        return Bomb(self.x, self.bottom)
+
+    def take_damage(self):
+        if self.invincible_timer > 0:
+            return False
+        self.hp -= 1
+        self.invincible_timer = 30  # half second invincibility
+        if self.hp <= 0:
+            self.alive = False
+        return True
+
+    def draw(self, screen, offset_x):
+        if not self.alive:
+            return
+        sx = int(self.x - offset_x - self.w // 2)
+        sy = int(self.y - self.h // 2)
+        # Flash when invincible
+        if self.invincible_timer > 0 and (self.invincible_timer // 4) % 2 == 0:
+            return
+        screen.blit(self.surface, (sx, sy))
+
+
+class Bullet:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.vy = -BULLET_SPEED
+        self.alive = True
+        self.surface = make_bullet_surface()
+
+    def update(self):
+        if not self.alive:
+            return
+        self.y += self.vy
+        if self.y < 0:
+            self.alive = False
+
+    def draw(self, screen, offset_x):
+        if not self.alive:
+            return
+        sx = int(self.x - offset_x - 2)
+        sy = int(self.y)
+        screen.blit(self.surface, (sx, sy))
+
+    @property
+    def rect(self):
+        return pygame.Rect(self.x - 2, self.y, 4, 8)
+
+
+class EnemyBullet:
+    def __init__(self, x, y, target_x, target_y):
+        self.x = x
+        self.y = y
+        self.alive = True
+        self.surface = make_enemy_bullet_surface()
+        # Aim at helicopter
+        dx = target_x - x
+        dy = target_y - y
+        dist = math.hypot(dx, dy)
+        if dist < 1:
+            self.vx, self.vy = 0, GUN_BULLET_SPEED
+        else:
+            self.vx = dx / dist * GUN_BULLET_SPEED
+            self.vy = dy / dist * GUN_BULLET_SPEED
+
+    def update(self):
+        if not self.alive:
+            return
+        self.x += self.vx
+        self.y += self.vy
+        if self.y > SCREEN_HEIGHT + 20 or self.y < -20 or self.x < -20 or self.x > LEVEL_WIDTH + 20:
+            self.alive = False
+
+    def draw(self, screen, offset_x):
+        if not self.alive:
+            return
+        sx = int(self.x - offset_x - 3)
+        sy = int(self.y - 3)
+        screen.blit(self.surface, (sx, sy))
+
+    @property
+    def rect(self):
+        return pygame.Rect(self.x - 3, self.y - 3, 6, 6)
+
+
+class Bomb:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.vy = BOMB_FALL_SPEED
+        self.alive = True
+        self.surface = make_bomb_surface()
+
+    def update(self, terrain):
+        if not self.alive:
+            return
+        self.y += self.vy
+        ground_y = get_ground_y(terrain, self.x)
+        if self.y + 6 >= ground_y:
+            self.alive = False
+            return 'explode'
+        if self.y > SCREEN_HEIGHT + 20:
+            self.alive = False
+        return None
+
+    def draw(self, screen, offset_x):
+        if not self.alive:
+            return
+        sx = int(self.x - offset_x - 4)
+        sy = int(self.y)
+        screen.blit(self.surface, (sx, sy))
+
+    @property
+    def rect(self):
+        return pygame.Rect(self.x - 4, self.y, 8, 12)
+
+
+class Explosion:
+    def __init__(self, x, y, frames):
+        self.x = x
+        self.y = y
+        self.frames = frames
+        self.frame = 0
+        self.alive = True
+
+    def update(self):
+        if not self.alive:
+            return
+        self.frame += 1
+        if self.frame >= len(self.frames) * 3:  # each frame shown for 3 ticks
+            self.alive = False
+
+    def draw(self, screen, offset_x):
+        if not self.alive:
+            return
+        idx = min(self.frame // 3, len(self.frames) - 1)
+        surf = self.frames[idx]
+        sx = int(self.x - offset_x - surf.get_width() // 2)
+        sy = int(self.y - surf.get_height() // 2)
+        screen.blit(surf, (sx, sy))
+
+
+class Civilian:
+    def __init__(self, cid, x, ground_y):
+        self.cid = cid
+        self.x = x
+        self.y = ground_y - 14  # standing on ground
+        self.ground_y = ground_y
+        self.state = 'waiting'  # waiting → running → boarding → onboard → rescued
+        self.surface = make_civilian_surface()
+        self.target_x = 0
+        self.rescued = False
+
+    def update(self, heli_rect, heli_grounded):
+        if self.state == 'onboard' or self.state == 'rescued':
+            return
+
+        if self.state == 'waiting':
+            # Check if heli is nearby and grounded
+            if heli_grounded:
+                dist = abs(self.x - heli_rect.centerx)
+                if dist < CIVILIAN_AGGRO_RANGE:
+                    self.state = 'running'
+
+        elif self.state == 'running':
+            # If heli takes off, civilians stop and wait
+            if not heli_grounded:
+                self.state = 'waiting'
+                return None
+
+            # Track helicopter position each frame
+            self.target_x = heli_rect.centerx
+            dx = self.target_x - self.x
+            if abs(dx) < 3:
+                self.state = 'boarding'
+            else:
+                self.x += CIVILIAN_RUN_SPEED if dx > 0 else -CIVILIAN_RUN_SPEED
+
+        elif self.state == 'boarding':
+            self.state = 'onboard'
+            return 'boarded'
+
+        return None
+
+    def draw(self, screen, offset_x):
+        if self.state == 'onboard' or self.state == 'rescued':
+            return
+        sx = int(self.x - offset_x - 5)
+        sy = int(self.y)
+        screen.blit(self.surface, (sx, sy))
+
+    @property
+    def rect(self):
+        return pygame.Rect(self.x - 5, self.y, 10, 14)
+
+
+class EnemyGun:
+    def __init__(self, gid, x, ground_y):
+        self.gid = gid
+        self.x = x
+        self.y = ground_y - 20  # sits on ground
+        self.hp = GUN_MAX_HP
+        self.max_hp = GUN_MAX_HP
+        self.alive = True
+        self.fire_cooldown = 0
+        self.surface = make_enemy_gun_surface()
+
+    def update(self, heli_x, heli_y, heli_grounded, scroll_x):
+        if not self.alive:
+            return None
+        if self.fire_cooldown > 0:
+            self.fire_cooldown -= 1
+
+        # Don't fire if helicopter is behind camera left edge (already passed)
+        if self.x < scroll_x - 50:
+            return None
+
+        dist = abs(self.x - heli_x)
+        if dist <= GUN_RANGE and not heli_grounded:
+            if self.fire_cooldown == 0:
+                self.fire_cooldown = GUN_FIRE_INTERVAL
+                # Fire toward helicopter
+                return EnemyBullet(self.x, self.y - 10, heli_x, heli_y)
+        return None
+
+    def take_damage(self, amount=1):
+        self.hp -= amount
+        if self.hp <= 0:
+            self.alive = False
+            return True  # destroyed
+        return False
+
+    def draw(self, screen, offset_x):
+        if not self.alive:
+            return
+        sx = int(self.x - offset_x - 12)
+        sy = int(self.y)
+        screen.blit(self.surface, (sx, sy))
+        # HP bar
+        bar_w = 20
+        bar_h = 3
+        bx = int(self.x - offset_x - bar_w // 2)
+        by = sy - 6
+        hp_ratio = self.hp / self.max_hp
+        pygame.draw.rect(screen, DARK_RED, (bx, by, bar_w, bar_h))
+        pygame.draw.rect(screen, GREEN, (bx, by, int(bar_w * hp_ratio), bar_h))
+
+    @property
+    def rect(self):
+        return pygame.Rect(self.x - 12, self.y, 24, 20)
+
+
+class Particle:
+    """Simple pixel particle for engine exhaust, etc."""
+    def __init__(self, x, y, vx, vy, color, life=20, size=2):
+        self.x = x
+        self.y = y
+        self.vx = vx
+        self.vy = vy
+        self.color = color
+        self.life = life
+        self.max_life = life
+        self.size = size
+        self.alive = True
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.life -= 1
+        if self.life <= 0:
+            self.alive = False
+
+    def draw(self, screen, offset_x):
+        if not self.alive:
+            return
+        alpha = int(255 * self.life / self.max_life)
+        sx = int(self.x - offset_x)
+        sy = int(self.y)
+        # Approximate alpha with color brightness
+        r, g, b = self.color
+        factor = self.life / self.max_life
+        col = (int(r * factor), int(g * factor), int(b * factor))
+        pygame.draw.rect(screen, col, (sx, sy, self.size, self.size))
+
+
+# ---------------------------------------------------------------------------
+# HUD
+# ---------------------------------------------------------------------------
+def draw_hud(screen: pygame.Surface, heli: Helicopter, civilians: list[Any],
+             score: int, font: pygame.font.Font) -> None:
+    # Hearts
+    heart_str = ""
+    for i in range(heli.max_hp):
+        if i < heli.hp:
+            heart_str += "\u2665 "  # filled heart
+        else:
+            heart_str += "\u2661 "  # empty heart
+    heart_surf = font.render(heart_str, True, RED)
+    screen.blit(heart_surf, (10, 10))
+
+    # Bombs
+    bomb_str = f"B: {heli.bombs}/{HELI_MAX_BOMBS}"
+    bomb_surf = font.render(bomb_str, True, WHITE)
+    screen.blit(bomb_surf, (10, 32))
+
+    # Civilians rescued / total
+    rescued = sum(1 for c in civilians if c.state == 'onboard' or c.state == 'rescued')
+    total = len(civilians)
+    civ_str = f"Civ: {rescued}/{total}"
+    civ_surf = font.render(civ_str, True, WHITE)
+    screen.blit(civ_surf, (10, 54))
+
+    # Score
+    score_str = f"Score: {score}"
+    score_surf = font.render(score_str, True, YELLOW)
+    screen.blit(score_surf, (SCREEN_WIDTH - 150, 10))
+
+    # Message when all onboard
+    if heli.alive and rescued == total and total > 0:
+        msg = "RETURN TO BASE!"
+        msg_surf = font.render(msg, True, YELLOW)
+        screen.blit(msg_surf, (SCREEN_WIDTH // 2 - msg_surf.get_width() // 2, 80))
+
+
+# ---------------------------------------------------------------------------
+# Main game
+# ---------------------------------------------------------------------------
+class Game:
+    def __init__(self):
+        pygame.init()
+        pygame.mixer.init(frequency=44100, size=-16, channels=1)
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Heli Rescue")
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.Font(None, 24)
+        self.big_font = pygame.font.Font(None, 52)
+        self.small_font = pygame.font.Font(None, 18)
+
+        # Pre-compute assets
+        random.seed(123)
+        self.terrain = build_terrain()
+        self.terrain_surf = make_terrain_surface(self.terrain, LEVEL_WIDTH)
+        self.mountain_surf = make_mountains_surface(LEVEL_WIDTH)
+        self.hills_surf = make_hills_surface(LEVEL_WIDTH)
+        self.clouds_surf = make_clouds_surface(LEVEL_WIDTH)
+        self.explosion_frames = make_explosion_surfaces()
+
+        # Sounds
+        self.sounds = init_sounds()
+
+        # VGZ/VGM background music (fallback to generated FM)
+        self.music = init_music()
+        self.music.play(-1)  # start immediately on title screen
+        self.music_playing = True
+
+        # Decoration trees
+        self.tree_positions = self._generate_trees()
+
+        # Game state
+        self.state = GameState.TITLE
+        self.score = 0
+
+        # Entities (set up by new_game)
+        self.heli = None
+        self.civilians = []
+        self.enemy_guns = []
+        self.bullets = []
+        self.enemy_bullets = []
+        self.bombs = []
+        self.explosions = []
+        self.particles = []
+        self.scroll_x = 0
+        self.auto_scroll_speed = SCROLL_NORMAL
+
+        # Base helipad position
+        self.helipad_x = 200
+
+        # Score tracking
+        self.guns_destroyed = 0
+
+        # Helipad hint timer (frames remaining to show "return here with civilians" message)
+        self.helipad_hint_timer = 0
+
+    def _generate_trees(self):
+        """Generate tree decoration positions."""
+        trees = []
+        random.seed(456)
+        # Scatter trees across the level, avoiding base area (0-400) and very steep terrain
+        for x in range(0, LEVEL_WIDTH, random.randint(60, 150)):
+            gnd = get_ground_y(self.terrain, x)
+            if gnd < 300 or gnd > 500:
+                continue
+            if x < 400:
+                continue  # no trees in base
+            trees.append(x)
+        return trees
+
+    def new_game(self):
+        random.seed()
+        self.heli = Helicopter()
+        self.scroll_x = 0
+        self.auto_scroll_speed = SCROLL_NORMAL
+        self.score = 0
+        self.guns_destroyed = 0
+        self.helipad_hint_timer = 0
+
+        # Clear entities
+        self.bullets.clear()
+        self.enemy_bullets.clear()
+        self.bombs.clear()
+        self.explosions.clear()
+        self.particles.clear()
+
+        # Generate civilians
+        self.civilians.clear()
+        civ_positions = [
+            (500, 700),
+            (900, 1000),
+            (1400, 1500),
+            (1700, 1800),
+            (2100, 2200),
+            (2500, 2600),
+            (2800, 2900),
+            (3400, 3500),
+        ]
+        for i, (x1, x2) in enumerate(civ_positions):
+            cx = random.randint(x1, x2)
+            gy = get_ground_y(self.terrain, cx)
+            self.civilians.append(Civilian(i, cx, gy))
+
+        # Generate enemy guns
+        self.enemy_guns.clear()
+        gun_positions = [
+            (1300, "hill"),
+            (1800, "hill"),
+            (2200, "valley_edge"),
+            (2600, "valley"),
+            (3200, "mountain"),
+        ]
+        for i, (gx, _) in enumerate(gun_positions):
+            gy = get_ground_y(self.terrain, gx)
+            self.enemy_guns.append(EnemyGun(i, gx, gy))
+
+    def handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return False
+
+                if self.state == GameState.TITLE:
+                    if event.key == pygame.K_SPACE:
+                        self.new_game()
+                        self.state = GameState.PLAYING
+                        self.sounds['engine'].play(-1)  # start engine when gameplay begins
+                elif self.state == GameState.PLAYING:
+                    if event.key == pygame.K_SPACE:
+                        b = self.heli.shoot()
+                        if b:
+                            self.bullets.append(b)
+                            self.sounds['shoot'].play()
+                    if event.key == pygame.K_m:
+                        b = self.heli.drop_bomb()
+                        if b:
+                            self.bombs.append(b)
+                            self.sounds['bomb_drop'].play()
+                elif self.state in (GameState.VICTORY, GameState.GAME_OVER):
+                    if event.key == pygame.K_SPACE:
+                        self.state = GameState.TITLE
+                        self.music.stop()
+                        self.music_playing = False
+                        for s in self.sounds.values():
+                            s.stop()
+                        # Restart background music for title screen (no engine drone on title)
+                        self.music.play(-1)
+                        self.music_playing = True
+
+        return True
+
+    def update(self):
+        # Always update explosions and particles (for game over / victory animations)
+        for exp in self.explosions[:]:
+            exp.update()
+            if not exp.alive:
+                self.explosions.remove(exp)
+        for p in self.particles[:]:
+            p.update()
+            if not p.alive:
+                self.particles.remove(p)
+
+        if self.state != GameState.PLAYING:
+            return
+
+        keys = pygame.key.get_pressed()
+        heli = self.heli
+        terrain = self.terrain
+
+        # --- Update helicopter ---
+        heli.update(keys, terrain)
+
+        # --- Engine particles (exhaust) ---
+        if heli.alive and not heli.grounded and random.random() < 0.6:
+            px = heli.x - heli.w // 2 - 3
+            py = heli.y + heli.h // 4
+            self.particles.append(Particle(
+                px, py,
+                random.uniform(-0.5, 0.5),
+                random.uniform(0.5, 1.5),
+                GRAY, random.randint(10, 20), 2
+            ))
+
+        # --- Update camera ---
+        self._update_camera()
+
+        # --- Update bullets ---
+        for b in self.bullets:
+            b.update()
+        self.bullets = [b for b in self.bullets if b.alive]
+
+        # --- Update enemy bullets ---
+        for b in self.enemy_bullets:
+            b.update()
+        self.enemy_bullets = [b for b in self.enemy_bullets if b.alive]
+
+        # --- Update bombs ---
+        for bomb in self.bombs[:]:
+            result = bomb.update(terrain)
+            if result == 'explode':
+                self._spawn_explosion(bomb.x, get_ground_y(terrain, bomb.x) - 4)
+                self.sounds['explosion'].play()
+                # Damage nearby enemies
+                for gun in self.enemy_guns:
+                    if gun.alive and abs(gun.x - bomb.x) < 50:
+                        destroyed = gun.take_damage(3)  # bomb kills in 1 hit
+                        if destroyed:
+                            self.guns_destroyed += 1
+                            self.score += 200
+                            self._spawn_explosion(gun.x, gun.y + 10)
+                self.bombs.remove(bomb)
+            elif not bomb.alive:
+                self.bombs.remove(bomb)
+
+        # --- Enemy guns fire ---
+        for gun in self.enemy_guns:
+            bullet = gun.update(heli.x, heli.y, heli.grounded, self.scroll_x)
+            if bullet:
+                self.enemy_bullets.append(bullet)
+
+        # --- Bullet vs enemy gun collisions ---
+        for b in self.bullets[:]:
+            for gun in self.enemy_guns:
+                if gun.alive and b.alive and b.rect.colliderect(gun.rect):
+                    b.alive = False
+                    destroyed = gun.take_damage(1)
+                    if destroyed:
+                        self.guns_destroyed += 1
+                        self.score += 200
+                        self._spawn_explosion(gun.x, gun.y + 10)
+                        self.sounds['explosion'].play()
+                    else:
+                        self._spawn_explosion(b.x, b.y)
+                    break
+
+        # --- Enemy bullet vs helicopter collisions ---
+        for b in self.enemy_bullets[:]:
+            if b.alive and heli.alive and b.rect.colliderect(heli.rect):
+                b.alive = False
+                if heli.take_damage():
+                    self.sounds['damage'].play()
+                    self._spawn_explosion(heli.x, heli.y)
+                self.enemy_bullets.remove(b)
+
+        # --- Update civilians ---
+        for civ in self.civilians:
+            result = civ.update(heli.rect, heli.grounded)
+            if result == 'boarded':
+                heli.passengers.append(civ.cid)
+                self.sounds['pickup'].play()
+                self.score += 100
+
+        # --- Check helicopter death ---
+        if not heli.alive:
+            self.state = GameState.GAME_OVER
+            self.music.stop()
+            self.music_playing = False
+            self.sounds['engine'].stop()
+            self._spawn_explosion(heli.x, heli.y)
+            return
+
+        # --- Check victory condition ---
+        all_onboard = all(c.state == 'onboard' or c.state == 'rescued' for c in self.civilians)
+        if all_onboard and len(self.civilians) > 0:
+            # Return to base mode
+            self.auto_scroll_speed = SCROLL_RETURN
+
+            # Check if landed on helipad
+            if heli.grounded and abs(heli.x - self.helipad_x) < 60:
+                # Victory!
+                for civ in self.civilians:
+                    civ.state = 'rescued'
+                self.score += 500
+                self.state = GameState.VICTORY
+                self.music.stop()
+                self.music_playing = False
+                self.sounds['engine'].stop()
+                self.sounds['victory'].play()
+                # Celebration particles
+                for _ in range(30):
+                    angle = random.uniform(0, math.pi * 2)
+                    speed = random.uniform(1, 4)
+                    self.particles.append(Particle(
+                        heli.x, heli.y,
+                        math.cos(angle) * speed,
+                        math.sin(angle) * speed - 2,
+                        random.choice([YELLOW, ORANGE, RED, WHITE]),
+                        random.randint(30, 60), 3
+                    ))
+                return
+
+        # Hint when landing on helipad without all civilians rescued
+        if heli.grounded and abs(heli.x - self.helipad_x) < 60:
+            if not (all_onboard and len(self.civilians) > 0):
+                self.helipad_hint_timer = 180  # show for ~3 seconds
+        # Count down the hint timer
+        if self.helipad_hint_timer > 0:
+            self.helipad_hint_timer -= 1
+
+    def _update_camera(self):
+        """Update camera position with auto-scroll, backtrack, and return logic."""
+        heli = self.heli
+
+        # Determine effective scroll speed for this frame
+        scroll_speed = self.auto_scroll_speed
+        # Pause auto-scroll while landed (normal mode only)
+        if scroll_speed > 0 and heli.grounded:
+            scroll_speed = 0
+
+        # Apply auto-scroll
+        self.scroll_x += scroll_speed
+
+        # --- Keep helicopter in a reasonable screen region ---
+        heli_screen_x = heli.x - self.scroll_x
+
+        # Backtrack: if heli is too far left (normal forward-scroll mode),
+        # scroll left at a fixed rate (slower than auto-scroll).
+        if heli_screen_x < BACKTRACK_ZONE and self.auto_scroll_speed > 0:
+            self.scroll_x += SCROLL_BACKTRACK  # -1 px/frame
+
+        # During return mode, if heli falls behind (right side of screen),
+        # push the camera right to keep it visible.
+        if heli_screen_x > SCREEN_WIDTH - 120 and self.auto_scroll_speed < 0:
+            correction = (heli_screen_x - (SCREEN_WIDTH - 120)) * 0.5
+            self.scroll_x += correction
+
+        # --- Clamp to level bounds ---
+        max_scroll = LEVEL_WIDTH - SCREEN_WIDTH
+        self.scroll_x = max(0, min(self.scroll_x, max_scroll))
+
+        # --- Safety clamp: never let heli go completely off-screen ---
+        heli_screen_x = heli.x - self.scroll_x
+        if heli_screen_x < 5:
+            self.scroll_x = max(0, heli.x - 5)
+        elif heli_screen_x > SCREEN_WIDTH - 5:
+            self.scroll_x = min(max_scroll, heli.x - (SCREEN_WIDTH - 5))
+
+    def _spawn_explosion(self, x, y):
+        self.explosions.append(Explosion(x, y, self.explosion_frames))
+
+    def draw(self):
+        self.screen.fill(SKY_BLUE)
+
+        if self.state == GameState.TITLE:
+            self._draw_title()
+        elif self.state == GameState.PLAYING:
+            self._draw_game()
+            draw_hud(self.screen, self.heli, self.civilians, self.score, self.font)
+            # Helipad hint message
+            if self.helipad_hint_timer > 0:
+                hint = self.font.render("Return here with all civilians to rescue them!", True, YELLOW)
+                self.screen.blit(hint, (SCREEN_WIDTH // 2 - hint.get_width() // 2, 110))
+        elif self.state == GameState.VICTORY:
+            self._draw_game()
+            draw_hud(self.screen, self.heli, self.civilians, self.score, self.font)
+            self._draw_overlay("VICTORY!", "All civilians rescued!", YELLOW)
+        elif self.state == GameState.GAME_OVER:
+            self._draw_game()
+            draw_hud(self.screen, self.heli, self.civilians, self.score, self.font)
+            self._draw_overlay("GAME OVER", "Press SPACE to restart", RED)
+
+        pygame.display.flip()
+
+    def _draw_title(self):
+        # Background
+        for y in range(0, SCREEN_HEIGHT, 4):
+            shade = max(10, 40 - y // 20)
+            pygame.draw.rect(self.screen, (shade, shade, shade + 10),
+                             (0, y, SCREEN_WIDTH, 4))
+
+        # Stars
+        random.seed(789)
+        for _ in range(80):
+            sx = random.randint(0, SCREEN_WIDTH)
+            sy = random.randint(0, 300)
+            bright = random.randint(100, 255)
+            self.screen.set_at((sx, sy), (bright, bright, bright))
+
+        # Title
+        title = self.big_font.render("HELI RESCUE", True, YELLOW)
+        self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 100))
+
+        # Subtitle
+        sub = self.small_font.render("~ 8-Bit Retro ~", True, WHITE)
+        self.screen.blit(sub, (SCREEN_WIDTH // 2 - sub.get_width() // 2, 160))
+
+        # Draw a small helicopter
+        heli_surf = make_helicopter_surface()
+        heli_surf = pygame.transform.scale2x(heli_surf)
+        self.screen.blit(heli_surf, (SCREEN_WIDTH // 2 - heli_surf.get_width() // 2, 200))
+
+        # Controls
+        controls = [
+            "CONTROLS",
+            "",
+            "W A S D  — Move helicopter",
+            "SPACE    — Shoot bullets",
+            "M        — Drop bomb",
+            "",
+            "Press SPACE to start",
+        ]
+        y = 300
+        for line in controls:
+            col = YELLOW if line == "Press SPACE to start" else (200, 200, 200)
+            if line == "CONTROLS":
+                surf = self.font.render(line, True, WHITE)
+            elif line == "":
+                y += 10
+                continue
+            else:
+                surf = self.small_font.render(line, True, col)
+            self.screen.blit(surf, (SCREEN_WIDTH // 2 - surf.get_width() // 2, y))
+            y += 28
+
+        # Blinking start text
+        if pygame.time.get_ticks() % 1000 < 500:
+            start_text = self.font.render("SPACE TO START", True, YELLOW)
+            self.screen.blit(start_text, (SCREEN_WIDTH // 2 - start_text.get_width() // 2, 480))
+
+    def _draw_game(self):
+        scroll = self.scroll_x
+
+        # --- Draw parallax layers ---
+        # Far: clouds at 0.15x
+        cloud_offset = scroll * 0.15
+        # Tile clouds
+        cw = self.clouds_surf.get_width()
+        for cx in range(-cw, cw * 2, cw):
+            sx = cx - int(cloud_offset % cw)
+            self.screen.blit(self.clouds_surf, (sx, 0))
+
+        # Far: mountains at 0.25x
+        mtn_offset = scroll * 0.25
+        mtn_w = self.mountain_surf.get_width()
+        for mx in range(-mtn_w, mtn_w * 2, mtn_w):
+            sx = mx - int(mtn_offset % mtn_w)
+            self.screen.blit(self.mountain_surf, (sx, 0))
+
+        # Mid: hills at 0.5x
+        hill_offset = scroll * 0.5
+        hill_w = self.hills_surf.get_width()
+        for hx in range(-hill_w, hill_w * 2, hill_w):
+            sx = hx - int(hill_offset % hill_w)
+            self.screen.blit(self.hills_surf, (sx, 0))
+
+        # --- Draw terrain (near layer, 1x) ---
+        # Clip to visible area
+        visible_rect = pygame.Rect(scroll, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.screen.blit(self.terrain_surf, (0, 0), visible_rect)
+
+        # --- Draw base helipad ---
+        self._draw_base(scroll)
+
+        # --- Draw trees ---
+        self._draw_trees(scroll)
+
+        # --- Draw enemy guns ---
+        for gun in self.enemy_guns:
+            gun.draw(self.screen, scroll)
+
+        # --- Draw civilians ---
+        for civ in self.civilians:
+            civ.draw(self.screen, scroll)
+
+        # --- Draw helicopter ---
+        self.heli.draw(self.screen, scroll)
+
+        # --- Draw bullets ---
+        for b in self.bullets:
+            b.draw(self.screen, scroll)
+
+        # --- Draw enemy bullets ---
+        for b in self.enemy_bullets:
+            b.draw(self.screen, scroll)
+
+        # --- Draw bombs ---
+        for bomb in self.bombs:
+            bomb.draw(self.screen, scroll)
+
+        # --- Draw explosions ---
+        for exp in self.explosions:
+            exp.draw(self.screen, scroll)
+
+        # --- Draw particles ---
+        for p in self.particles:
+            p.draw(self.screen, scroll)
+
+    def _draw_base(self, scroll):
+        """Draw the base area with helipad and building."""
+        # Only draw if visible
+        if scroll > 500:
+            return
+
+        # Helipad
+        pad_x = self.helipad_x - scroll
+        pad_y = get_ground_y(self.terrain, self.helipad_x) - 4
+
+        # Concrete pad
+        pygame.draw.ellipse(self.screen, DARK_GRAY,
+                           (pad_x - 30, pad_y - 8, 60, 16))
+        pygame.draw.ellipse(self.screen, GRAY,
+                           (pad_x - 26, pad_y - 6, 52, 12))
+        # H marking
+        h_surf = self.small_font.render("H", True, WHITE)
+        self.screen.blit(h_surf, (pad_x - h_surf.get_width() // 2, pad_y - 6))
+
+        # Small building
+        build_x = 50 - scroll
+        build_y = get_ground_y(self.terrain, 50) - 50
+        pygame.draw.rect(self.screen, DARK_BROWN,
+                        (build_x, build_y, 40, 50))
+        # Roof
+        pygame.draw.rect(self.screen, RED,
+                        (build_x - 4, build_y - 6, 48, 8))
+        # Door
+        pygame.draw.rect(self.screen, DARK_GRAY,
+                        (build_x + 14, build_y + 28, 12, 22))
+        # Window
+        pygame.draw.rect(self.screen, YELLOW,
+                        (build_x + 6, build_y + 10, 10, 10))
+        pygame.draw.rect(self.screen, YELLOW,
+                        (build_x + 24, build_y + 10, 10, 10))
+
+    def _draw_trees(self, scroll):
+        """Draw decorative trees."""
+        for tx in self.tree_positions:
+            sx = int(tx - scroll)
+            if sx < -30 or sx > SCREEN_WIDTH + 30:
+                continue
+            gy = get_ground_y(self.terrain, tx)
+            # Trunk
+            pygame.draw.rect(self.screen, DARK_BROWN,
+                            (sx - 3, gy - 30, 6, 30))
+            # Foliage (triangular)
+            pts = [(sx, gy - 50), (sx - 15, gy - 28), (sx + 15, gy - 28)]
+            col = DARK_GREEN if (tx // 100) % 2 == 0 else GREEN
+            pygame.draw.polygon(self.screen, col, pts)
+            # Second layer
+            pts2 = [(sx, gy - 42), (sx - 12, gy - 24), (sx + 12, gy - 24)]
+            pygame.draw.polygon(self.screen, GREEN if col == DARK_GREEN else DARK_GREEN, pts2)
+
+    def _draw_overlay(self, title_text, subtitle_text, title_color):
+        """Draw a translucent overlay with game result."""
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        overlay.set_alpha(160)
+        overlay.fill(BLACK)
+        self.screen.blit(overlay, (0, 0))
+
+        # Title
+        title = self.big_font.render(title_text, True, title_color)
+        self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 200))
+
+        # Subtitle
+        sub = self.font.render(subtitle_text, True, WHITE)
+        self.screen.blit(sub, (SCREEN_WIDTH // 2 - sub.get_width() // 2, 260))
+
+        # Stats
+        stats = [
+            f"Score: {self.score}",
+            f"Civilians: {sum(1 for c in self.civilians if c.state == 'rescued')}/{len(self.civilians)}",
+            f"Guns destroyed: {self.guns_destroyed}",
+        ]
+        y = 310
+        for s in stats:
+            surf = self.small_font.render(s, True, (200, 200, 200))
+            self.screen.blit(surf, (SCREEN_WIDTH // 2 - surf.get_width() // 2, y))
+            y += 24
+
+        # Restart prompt
+        if pygame.time.get_ticks() % 1000 < 500:
+            restart = self.font.render("Press SPACE to continue", True, YELLOW)
+            self.screen.blit(restart, (SCREEN_WIDTH // 2 - restart.get_width() // 2, 400))
+
+    def run(self):
+        running = True
+        while running:
+            running = self.handle_events()
+            self.update()
+            self.draw()
+            self.clock.tick(FPS)
+        pygame.quit()
+        sys.exit()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    game = Game()
+    game.run()

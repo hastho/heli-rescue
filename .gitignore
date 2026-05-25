@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Pygame mixer dumps (if any)
+*.wav
+
+# Temp files
+*.tmp
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Agent research artifacts (keep for reference but don't track generated WAVs)
+vgm_research.md
+
+# src/ contains third-party code (vgmparse) — exclude
+src/
