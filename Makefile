@@ -4,7 +4,7 @@ run:
 	python main.py
 
 test:
-	@if [ -d tests ]; then python -m pytest tests/ -v; else echo "No tests yet — create tests/ directory"; fi
+	python -m pytest tests/ -v
 
 lint:
 	@python -m ruff check main.py --fix 2>/dev/null || python -m py_compile main.py
