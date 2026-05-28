@@ -1593,6 +1593,9 @@ class Game:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     return False
+                if event.key == pygame.K_F12:
+                    pygame.image.save(self.screen, "screenshot.png")
+                    print("Screenshot saved: screenshot.png")
 
                 if self.state == GameState.TITLE:
                     if event.key == pygame.K_SPACE:
