@@ -32,3 +32,10 @@ WORKFLOW_STATE.md
 
 # Copyrighted VGZ music files -- provide your own (see tunes/README.md)
 tunes/*.vgz
+
+# Runtime artifacts (auto-created, never committed)
+highscores.json
+screenshot.png
+
+# Internal reference documents (not for public repo)
+PALETTETRICKS.md
