@@ -7,7 +7,7 @@ name = "heli-rescue"
 version = "1.0.0"
 description = "8-bit side-scrolling helicopter rescue game"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "pygame>=2.5,<3",
     "ymfm-py>=0.2,<0.3",
