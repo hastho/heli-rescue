@@ -482,7 +482,7 @@ def make_helicopter_surface() -> pygame.Surface:
     # Skids
     pygame.draw.rect(surf, DARK_GRAY, (6, 20, 20, 2))
     pygame.draw.rect(surf, DARK_GRAY, (8, 22, 16, 2))
-    return surf
+    return pygame.transform.flip(surf, True, False)
 
 
 def make_civilian_surface() -> pygame.Surface:
