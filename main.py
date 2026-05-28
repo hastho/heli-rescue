@@ -1520,6 +1520,7 @@ class Game:
         self.mountain_surf = make_mountains_surface(LEVEL_WIDTH, pal)
         self.hills_surf = make_hills_surface(LEVEL_WIDTH, pal)
         self.clouds_surf = make_clouds_surface(LEVEL_WIDTH)  # clouds stay white
+        random.seed()  # re-seed after make_clouds_surface() seeds to 42 internally
         self.heli = Helicopter()
         self.scroll_x = 0
         self.auto_scroll_speed = SCROLL_NORMAL
@@ -1536,31 +1537,15 @@ class Game:
 
         # Generate civilians
         self.civilians.clear()
-        civ_positions = [
-            (500, 700),
-            (900, 1000),
-            (1400, 1500),
-            (1700, 1800),
-            (2100, 2200),
-            (2500, 2600),
-            (2800, 2900),
-            (3400, 3500),
-        ]
-        for i, (x1, x2) in enumerate(civ_positions):
-            cx = random.randint(x1, x2)
+        civ_x_positions = random.sample(range(600, LEVEL_WIDTH - 300, 50), 8)
+        for i, cx in enumerate(civ_x_positions):
             gy = get_ground_y(self.terrain, cx)
             self.civilians.append(Civilian(i, cx, gy))
 
         # Generate enemy guns
         self.enemy_guns.clear()
-        gun_positions = [
-            (1300, "hill"),
-            (1800, "hill"),
-            (2200, "valley_edge"),
-            (2600, "valley"),
-            (3200, "mountain"),
-        ]
-        for i, (gx, _) in enumerate(gun_positions):
+        gun_x_positions = random.sample(range(600, LEVEL_WIDTH - 300, 100), 5)
+        for i, gx in enumerate(gun_x_positions):
             gy = get_ground_y(self.terrain, gx)
             self.enemy_guns.append(EnemyGun(i, gx, gy))
 
