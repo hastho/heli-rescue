@@ -7,6 +7,7 @@ Provides sample_terrain and heli fixtures for entity tests.
 import os
 # Must set before importing pygame
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
+os.environ['SDL_AUDIODRIVER'] = 'dummy'
 
 import pygame
 import pytest
