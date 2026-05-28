@@ -23,7 +23,9 @@ import struct
 import array
 import os
 import glob
+import json
 from typing import Any
+import datetime
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -147,6 +149,10 @@ GUN_FIRE_INTERVAL = 45   # frames
 GUN_MAX_HP = 3
 GUN_BULLET_SPEED = 4
 
+# High scores
+HIGHSCORES_FILE = "highscores.json"
+MAX_HIGHSCORES = 10
+
 # Terrain
 TERRAIN_SEGMENT = 20     # px per height entry
 NUM_SEGMENTS = LEVEL_WIDTH // TERRAIN_SEGMENT  # 200
@@ -160,12 +166,15 @@ class GameState(Enum):
     Transitions:
         TITLE --SPACE--> PLAYING --all rescued--> VICTORY
         PLAYING --HP=0--> GAME_OVER
-        VICTORY/GAME_OVER --SPACE--> TITLE
+        VICTORY --SPACE--> PLAYING (NG+) / --ESC--> TITLE
+        GAME_OVER --SPACE--> TITLE
+        TITLE --TAB--> HIGH_SCORES --SPACE/ESC--> TITLE
     """
     TITLE = 0
     PLAYING = 1
     VICTORY = 2
     GAME_OVER = 3
+    HIGH_SCORES = 4
 
 
 # ---------------------------------------------------------------------------
@@ -746,13 +755,18 @@ class Helicopter:
 
     Movement is WASD with HELI_SPEED px/frame. Ground collision snaps the
     heli to the terrain surface; ceiling clamped to y=80. Level edges are
-    also clamped.
+    also clamped. Bomb capacity is configurable via max_bombs (default
+    HELI_MAX_BOMBS, lowered in NG+ for higher difficulty).
     """
 
-    def __init__(self):
+    def __init__(self, max_bombs: int = HELI_MAX_BOMBS):
         """Initialise helicopter at default spawn position (150, 300).
 
         State: full HP, full bombs, no passengers, no cooldowns, alive.
+
+        Args:
+            max_bombs: Maximum bomb capacity (default HELI_MAX_BOMBS,
+                       lowered in NG+ for higher difficulty).
         """
         self.x = 150
         self.y = 300
@@ -761,7 +775,8 @@ class Helicopter:
         self.w, self.h = HELI_SIZE
         self.hp = HELI_MAX_HP
         self.max_hp = HELI_MAX_HP
-        self.bombs = HELI_MAX_BOMBS
+        self.max_bombs = max_bombs
+        self.bombs = max_bombs
         self.grounded = False
         self.shoot_cooldown = 0
         self.bomb_cooldown = 0
@@ -897,7 +912,7 @@ class Helicopter:
     def drop_bomb(self) -> Bomb | None:
         """Drop a single bomb below the helicopter if available and off cooldown.
 
-        Bombs are limited (HELI_MAX_BOMBS) and have a cooldown (BOMB_COOLDOWN
+        Bombs are limited (self.max_bombs) and have a cooldown (BOMB_COOLDOWN
         frames). Each bomb falls straight down and explodes on ground contact.
 
         Returns:
@@ -1003,22 +1018,26 @@ class Bullet:
 class EnemyBullet:
     """A bullet fired by an EnemyGun, aimed at the helicopter's current position.
 
-    Moves at GUN_BULLET_SPEED px/frame in the direction of the target.
-    Dies when it exits the visible area (any edge +20px margin).
+    Moves at the configured speed (default GUN_BULLET_SPEED, increased in NG+)
+    in the direction of the target. Dies when it exits the visible area
+    (any edge +20px margin).
     """
 
-    def __init__(self, x: float, y: float, target_x: float, target_y: float):
+    def __init__(self, x: float, y: float, target_x: float, target_y: float,
+                 speed: float = GUN_BULLET_SPEED):
         """Initialise bullet at (x, y) heading toward (target_x, target_y).
 
         Velocity is computed by normalising the aim vector and scaling to
-        GUN_BULLET_SPEED. If the target is at the same position (dist < 1px),
-        falls straight down as a fallback.
+        the given speed (default GUN_BULLET_SPEED, increased in NG+).
+        If the target is at the same position (dist < 1px), falls straight
+        down as a fallback.
 
         Args:
             x: Spawn world-x (gun muzzle position).
             y: Spawn world-y (gun muzzle position).
             target_x: Target world-x (helicopter centre).
             target_y: Target world-y (helicopter centre).
+            speed: Bullet speed in px/frame (default GUN_BULLET_SPEED).
         """
         self.x = x
         self.y = y
@@ -1029,10 +1048,10 @@ class EnemyBullet:
         dy = target_y - y
         dist = math.hypot(dx, dy)
         if dist < 1:
-            self.vx, self.vy = 0, GUN_BULLET_SPEED
+            self.vx, self.vy = 0, speed
         else:
-            self.vx = dx / dist * GUN_BULLET_SPEED
-            self.vy = dy / dist * GUN_BULLET_SPEED
+            self.vx = dx / dist * speed
+            self.vy = dy / dist * speed
 
     def update(self) -> None:
         """Advance bullet one frame: move, kill if off-screen."""
@@ -1159,27 +1178,36 @@ class Civilian:
         waiting -> running -> boarding -> onboard -> rescued
 
     - waiting:  Standing still, watching for a grounded heli nearby.
-    - running:  Moving toward the grounded helicopter at CIVILIAN_RUN_SPEED.
+    - running:  Moving toward the grounded helicopter at self.run_speed.
     - boarding: Reached the helicopter -- triggers onboard.
     - onboard:  Passenger inside the helicopter (hidden from world).
     - rescued:  Final state after victory (HUD counts these).
+    - aggro_range: Distance to trigger run (default CIVILIAN_AGGRO_RANGE).
 
     If the helicopter takes off while a civilian is running, they return
     to waiting state.
     """
 
-    def __init__(self, cid: int, x: float, ground_y: float):
+    def __init__(self, cid: int, x: float, ground_y: float,
+                 aggro_range: float = CIVILIAN_AGGRO_RANGE,
+                 run_speed: float = CIVILIAN_RUN_SPEED):
         """Initialise civilian at (x, ground_y), standing on the terrain.
 
         Args:
             cid: Unique civilian ID (index into generation order).
             x: World-x position.
             ground_y: Y-coordinate of the terrain surface at x.
+            aggro_range: Distance at which civilian starts running toward
+                a grounded heli (default CIVILIAN_AGGRO_RANGE).
+            run_speed: Movement speed toward heli in px/frame
+                (default CIVILIAN_RUN_SPEED).
         """
         self.cid = cid
         self.x = x
         self.y = ground_y - 14  # standing on ground
         self.ground_y = ground_y
+        self.aggro_range = aggro_range
+        self.run_speed = run_speed
         self.state = 'waiting'  # waiting -> running -> boarding -> onboard -> rescued
         self.surface = make_civilian_surface()
         self.target_x = 0
@@ -1202,7 +1230,7 @@ class Civilian:
             # Check if heli is nearby and grounded
             if heli_grounded:
                 dist = abs(self.x - heli_rect.centerx)
-                if dist < CIVILIAN_AGGRO_RANGE:
+                if dist < self.aggro_range:
                     self.state = 'running'
 
         elif self.state == 'running':
@@ -1217,7 +1245,7 @@ class Civilian:
             if abs(dx) < 3:
                 self.state = 'boarding'
             else:
-                self.x += CIVILIAN_RUN_SPEED if dx > 0 else -CIVILIAN_RUN_SPEED
+                self.x += self.run_speed if dx > 0 else -self.run_speed
 
         elif self.state == 'boarding':
             self.state = 'onboard'
@@ -1242,19 +1270,29 @@ class Civilian:
 class EnemyGun:
     """A stationary ground turret that fires aimed bullets at the helicopter.
 
-    Fires only when the helicopter is within GUN_RANGE, is not grounded,
+    Fires only when the helicopter is within self.gun_range, is not grounded,
     and has not yet scrolled past the gun (off-camera left). Each gun has
     GUN_MAX_HP health and can be destroyed by 3 bullets or 1 bomb.
-    Draws a green/red HP bar above itself.
+    Uses stored fire_interval, bullet_speed, and gun_range (set in constructor,
+    allowing NG+ scaling). Draws a green/red HP bar above itself.
     """
 
-    def __init__(self, gid: int, x: float, ground_y: float):
+    def __init__(self, gid: int, x: float, ground_y: float,
+                 fire_interval: int = GUN_FIRE_INTERVAL,
+                 bullet_speed: float = GUN_BULLET_SPEED,
+                 gun_range: float = GUN_RANGE):
         """Initialise gun at (x, ground_y) with full HP.
 
         Args:
             gid: Unique gun ID (index into generation order).
             x: World-x position.
             ground_y: Y-coordinate of the terrain surface at x.
+            fire_interval: Frames between shots (default GUN_FIRE_INTERVAL,
+                decreased in NG+ for faster fire rate).
+            bullet_speed: Speed of enemy bullets in px/frame
+                (default GUN_BULLET_SPEED, increased in NG+).
+            gun_range: Maximum firing range in px
+                (default GUN_RANGE, decreased in NG+).
         """
         self.gid = gid
         self.x = x
@@ -1263,6 +1301,9 @@ class EnemyGun:
         self.max_hp = GUN_MAX_HP
         self.alive = True
         self.fire_cooldown = 0
+        self.fire_interval = fire_interval
+        self.bullet_speed = bullet_speed
+        self.gun_range = gun_range
         self.surface = make_enemy_gun_surface()
 
     def update(self, heli_x: float, heli_y: float, heli_grounded: bool,
@@ -1271,10 +1312,10 @@ class EnemyGun:
 
         Fires an EnemyBullet aimed at (heli_x, heli_y) if all conditions met:
             - Alive
-            - Helicopter within GUN_RANGE
+            - Helicopter within self.gun_range
             - Helicopter not grounded
             - Gun not scrolled past (self.x < scroll_x - 50)
-            - Cooldown elapsed (GUN_FIRE_INTERVAL frames)
+            - Cooldown elapsed (self.fire_interval frames)
 
         Args:
             heli_x: Helicopter world-x.
@@ -1295,11 +1336,11 @@ class EnemyGun:
             return None
 
         dist = abs(self.x - heli_x)
-        if dist <= GUN_RANGE and not heli_grounded:
+        if dist <= self.gun_range and not heli_grounded:
             if self.fire_cooldown == 0:
-                self.fire_cooldown = GUN_FIRE_INTERVAL
+                self.fire_cooldown = self.fire_interval
                 # Fire toward helicopter
-                return EnemyBullet(self.x, self.y - 10, heli_x, heli_y)
+                return EnemyBullet(self.x, self.y - 10, heli_x, heli_y, self.bullet_speed)
         return None
 
     def take_damage(self, amount: int = 1) -> bool:
@@ -1383,14 +1424,14 @@ class Particle:
 # HUD
 # ---------------------------------------------------------------------------
 def draw_hud(screen: pygame.Surface, heli: Helicopter, civilians: list[Any],
-             score: int, font: pygame.font.Font) -> None:
+             score: int, font: pygame.font.Font, rank: int = 1) -> None:
     """Render the HUD overlay: hearts, bombs, civilian/firepower status, score.
 
     Layout (left-aligned at x=10):
         Line 1 (y=10):  Hearts (heart symbol) -- red filled / white outline.
         Line 2 (y=32):  Bombs remaining (B: N/MAX).
         Line 3 (y=54):  Civilians rescued (Civ: N/TOTAL) + firepower diamonds (PWR: filled/empty diamonds).
-        Top-right:      Score (y=10, right-aligned).
+        Top-right:      Score (y=10, right-aligned) + Rank (below score).
 
     If all civilians are onboard, a centred "RETURN TO BASE!" message
     appears at y=80.
@@ -1401,6 +1442,7 @@ def draw_hud(screen: pygame.Surface, heli: Helicopter, civilians: list[Any],
         civilians: List of all Civilian objects in the level.
         score: Current player score.
         font: Monospace-style pygame Font for rendering text.
+        rank: Current difficulty rank (default 1, shown below score).
     """
     # Hearts
     heart_str = ""
@@ -1413,7 +1455,7 @@ def draw_hud(screen: pygame.Surface, heli: Helicopter, civilians: list[Any],
     screen.blit(heart_surf, (10, 10))
 
     # Bombs
-    bomb_str = f"B: {heli.bombs}/{HELI_MAX_BOMBS}"
+    bomb_str = f"B: {heli.bombs}/{heli.max_bombs}"
     bomb_surf = font.render(bomb_str, True, WHITE)
     screen.blit(bomb_surf, (10, 32))
 
@@ -1431,11 +1473,107 @@ def draw_hud(screen: pygame.Surface, heli: Helicopter, civilians: list[Any],
     score_surf = font.render(score_str, True, YELLOW)
     screen.blit(score_surf, (SCREEN_WIDTH - 150, 10))
 
+    # Rank (NG+)
+    if rank > 1:
+        rank_str = f"Rank {rank}"
+        rank_surf = font.render(rank_str, True, ORANGE)
+        screen.blit(rank_surf, (SCREEN_WIDTH - 150, 34))
+
     # Message when all onboard
     if heli.alive and rescued == total and total > 0:
         msg = "RETURN TO BASE!"
         msg_surf = font.render(msg, True, YELLOW)
         screen.blit(msg_surf, (SCREEN_WIDTH // 2 - msg_surf.get_width() // 2, 80))
+
+
+# ---------------------------------------------------------------------------
+# High score helpers
+# ---------------------------------------------------------------------------
+def load_highscores() -> list[dict]:
+    """Load high scores from the JSON file.
+
+    Handles FileNotFoundError (missing file = first play), JSONDecodeError
+    (corrupted file), and invalid schema (not a list, missing keys) by
+    returning an empty list.
+
+    Returns:
+        list[dict]: List of score records, each with keys:
+            score, rank, rescued, destroyed, date.
+            Empty list on any error.
+    """
+    if not os.path.exists(HIGHSCORES_FILE):
+        return []
+    try:
+        with open(HIGHSCORES_FILE, 'r') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return []
+    # Validate schema
+    if not isinstance(data, list):
+        return []
+    required_keys = {'score', 'rank', 'rescued', 'destroyed', 'date'}
+    for entry in data:
+        if not isinstance(entry, dict):
+            return []
+        if not required_keys.issubset(entry.keys()):
+            return []
+    return data
+
+
+def save_highscores(scores: list[dict]) -> None:
+    """Save high scores list to the JSON file.
+
+    Args:
+        scores: List of score record dicts to persist.
+    """
+    with open(HIGHSCORES_FILE, 'w') as f:
+        json.dump(scores, f, indent=2)
+
+
+def is_highscore(score: int, scores: list[dict]) -> int | None:
+    """Check if a score qualifies for the high score list.
+
+    Args:
+        score: The player's final score.
+        scores: Current high score list (sorted descending by score).
+
+    Returns:
+        int | None: The rank index (0-9) where this score would be
+        inserted, or None if it does not qualify.
+    """
+    for i, entry in enumerate(scores):
+        if score > entry['score']:
+            return i
+    if len(scores) < MAX_HIGHSCORES:
+        return len(scores)
+    return None
+
+
+def add_highscore(score: int, rank: int, rescued: int, destroyed: int,
+                  scores: list[dict]) -> list[dict]:
+    """Insert a new high score record in sorted order.
+
+    Args:
+        score: The player's final score.
+        rank: The difficulty rank at time of scoring.
+        rescued: Number of civilians rescued.
+        destroyed: Number of enemy guns destroyed.
+        scores: Current high score list (modified in place).
+
+    Returns:
+        list[dict]: Updated high score list, sorted descending by score,
+        truncated to MAX_HIGHSCORES entries.
+    """
+    new_entry = {
+        'score': score,
+        'rank': rank,
+        'rescued': rescued,
+        'destroyed': destroyed,
+        'date': datetime.date.today().isoformat(),
+    }
+    scores.append(new_entry)
+    scores.sort(key=lambda e: e['score'], reverse=True)
+    return scores[:MAX_HIGHSCORES]
 
 
 # ---------------------------------------------------------------------------
@@ -1491,6 +1629,11 @@ class Game:
         self.state = GameState.TITLE
         self.score = 0
 
+        # High scores + NG+ state
+        self.highscores = load_highscores()
+        self.difficulty_rank = 1
+        self.score_multiplier = 1.0
+
         # Entities (set up by new_game)
         self.heli = None
         self.civilians = []
@@ -1529,11 +1672,10 @@ class Game:
     def new_game(self):
         """Reset all game entities and pick a random level theme.
 
-        Called when the player presses SPACE on the title screen.
-        Re-renders terrain, mountains, hills, and clouds with the chosen
-        theme palette. Spawns the helicopter at default position, places
-        8 civilians at randomised positions, and 5 enemy guns at fixed
-        landmark positions.
+        Called when the player presses SPACE on the title screen (rank 1)
+        or continues in New Game+ (rank > 1). Re-renders terrain, mountains,
+        hills, and clouds with the chosen theme palette. Applies NG+ scaling
+        based on self.difficulty_rank.
         """
         random.seed()
         # Pick a random theme and regenerate rendered surfaces
@@ -1544,7 +1686,19 @@ class Game:
         self.hills_surf = make_hills_surface(LEVEL_WIDTH, pal)
         self.clouds_surf = make_clouds_surface(LEVEL_WIDTH)  # clouds stay white
         random.seed()  # re-seed after make_clouds_surface() seeds to 42 internally
-        self.heli = Helicopter()
+
+        # NG+ scaling
+        rank = self.difficulty_rank
+        num_guns = min(15, 5 + 2 * (rank - 1))
+        num_civilians = min(16, 8 + 2 * (rank - 1))
+        fire_interval = max(15, GUN_FIRE_INTERVAL - 5 * (rank - 1))
+        bullet_speed = min(10, GUN_BULLET_SPEED + (rank - 1))
+        gun_range = max(150, GUN_RANGE - 20 * (rank - 1))
+        aggro_range = max(60, CIVILIAN_AGGRO_RANGE - 10 * (rank - 1))
+        start_bombs = max(1, HELI_MAX_BOMBS - (rank - 1))
+        self.score_multiplier = 1.0 + 0.5 * (rank - 1)
+
+        self.heli = Helicopter(max_bombs=start_bombs)
         self.scroll_x = 0
         self.auto_scroll_speed = SCROLL_NORMAL
         self.score = 0
@@ -1558,30 +1712,37 @@ class Game:
         self.explosions.clear()
         self.particles.clear()
 
-        # Generate civilians
+        # Generate civilians with NG+ scaling
         self.civilians.clear()
-        civ_x_positions = random.sample(range(600, LEVEL_WIDTH - 300, 50), 8)
+        civ_available = LEVEL_WIDTH - 900  # positions from 600 to 3700
+        civ_step = max(30, civ_available // max(1, num_civilians + 2))
+        civ_x_positions = random.sample(range(600, LEVEL_WIDTH - 300, civ_step), num_civilians)
         for i, cx in enumerate(civ_x_positions):
             gy = get_ground_y(self.terrain, cx)
-            self.civilians.append(Civilian(i, cx, gy))
+            self.civilians.append(Civilian(i, cx, gy, aggro_range=aggro_range))
 
-        # Generate enemy guns
+        # Generate enemy guns with NG+ scaling
         self.enemy_guns.clear()
-        gun_x_positions = random.sample(range(600, LEVEL_WIDTH - 300, 100), 5)
+        gun_step = max(50, civ_available // max(1, num_guns + 2))
+        gun_x_positions = random.sample(range(600, LEVEL_WIDTH - 300, gun_step), num_guns)
         for i, gx in enumerate(gun_x_positions):
             gy = get_ground_y(self.terrain, gx)
-            self.enemy_guns.append(EnemyGun(i, gx, gy))
+            self.enemy_guns.append(EnemyGun(i, gx, gy, fire_interval, bullet_speed, gun_range))
 
     def handle_events(self) -> bool:
         """Process the Pygame event queue for one frame.
 
         Dispatches based on self.state:
             TITLE:      SPACE -> new_game(), PLAYING state, start engine.
+                        TAB -> HIGH_SCORES state.
             PLAYING:    SPACE -> shoot bullet(s); M -> drop bomb.
-            VICTORY/    SPACE -> reset to TITLE, stop all sounds, restart
-            GAME_OVER:          background music for the title screen.
+            VICTORY:    SPACE -> NG+ continue (rank++), new_game, PLAYING.
+                        ESC -> reset rank, return to TITLE.
+            GAME_OVER:  SPACE -> return to TITLE.
+            HIGH_SCORES: SPACE or ESC -> return to TITLE.
 
-        ESC or window close always returns False to quit the game.
+        ESC behaviour is state-sensitive: VICTORY and HIGH_SCORES transition
+        to TITLE; all other states quit the game.
 
         Returns:
             bool: False if the game should quit, True otherwise.
@@ -1591,17 +1752,40 @@ class Game:
                 return False
 
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    return False
                 if event.key == pygame.K_F12:
                     pygame.image.save(self.screen, "screenshot.png")
                     print("Screenshot saved: screenshot.png")
+
+                if event.key == pygame.K_ESCAPE:
+                    # State-sensitive exit behaviour
+                    if self.state == GameState.VICTORY:
+                        # ESC from victory: reset rank, return to title
+                        self.difficulty_rank = 1
+                        self.score_multiplier = 1.0
+                        self.state = GameState.TITLE
+                        if self.music:
+                            self.music.stop()
+                        self.music_playing = False
+                        for s in self.sounds.values():
+                            s.stop()
+                        if self.music:
+                            self.music.play(-1)
+                        self.music_playing = bool(self.music)
+                        continue
+                    elif self.state == GameState.HIGH_SCORES:
+                        self.state = GameState.TITLE
+                        continue
+                    else:
+                        # TITLE, PLAYING, GAME_OVER -> quit
+                        return False
 
                 if self.state == GameState.TITLE:
                     if event.key == pygame.K_SPACE:
                         self.new_game()
                         self.state = GameState.PLAYING
                         self.sounds['engine'].play(-1)  # start engine when gameplay begins
+                    elif event.key == pygame.K_TAB:
+                        self.state = GameState.HIGH_SCORES
                 elif self.state == GameState.PLAYING:
                     if event.key == pygame.K_SPACE:
                         bullets = self.heli.shoot()
@@ -1613,18 +1797,28 @@ class Game:
                         if b:
                             self.bombs.append(b)
                             self.sounds['bomb_drop'].play()
-                elif self.state in (GameState.VICTORY, GameState.GAME_OVER):
+                elif self.state == GameState.VICTORY:
                     if event.key == pygame.K_SPACE:
+                        self.difficulty_rank += 1
+                        self.new_game()
+                        self.state = GameState.PLAYING
+                        self.sounds['engine'].play(-1)
+                elif self.state == GameState.GAME_OVER:
+                    if event.key == pygame.K_SPACE:
+                        self.difficulty_rank = 1
+                        self.score_multiplier = 1.0
                         self.state = GameState.TITLE
                         if self.music:
                             self.music.stop()
                         self.music_playing = False
                         for s in self.sounds.values():
                             s.stop()
-                        # Restart background music for title screen (no engine drone on title)
                         if self.music:
                             self.music.play(-1)
                         self.music_playing = bool(self.music)
+                elif self.state == GameState.HIGH_SCORES:
+                    if event.key in (pygame.K_SPACE, pygame.K_ESCAPE):
+                        self.state = GameState.TITLE
 
         return True
 
@@ -1702,7 +1896,7 @@ class Game:
                         destroyed = gun.take_damage(3)  # bomb kills in 1 hit
                         if destroyed:
                             self.guns_destroyed += 1
-                            self.score += 200
+                            self.score += int(200 * self.score_multiplier)
                             self._spawn_explosion(gun.x, gun.y + 10)
                 self.bombs.remove(bomb)
             elif not bomb.alive:
@@ -1722,7 +1916,7 @@ class Game:
                     destroyed = gun.take_damage(1)
                     if destroyed:
                         self.guns_destroyed += 1
-                        self.score += 200
+                        self.score += int(200 * self.score_multiplier)
                         self._spawn_explosion(gun.x, gun.y + 10)
                         self.sounds['explosion'].play()
                     else:
@@ -1744,11 +1938,19 @@ class Game:
             if result == 'boarded':
                 heli.passengers.append(civ.cid)
                 self.sounds['pickup'].play()
-                self.score += 100
+                self.score += int(100 * self.score_multiplier)
 
         # --- Check helicopter death ---
         if not heli.alive:
             self.state = GameState.GAME_OVER
+            # Auto-record high score on death
+            rescued = sum(1 for c in self.civilians if c.state == 'onboard' or c.state == 'rescued')
+            rank_idx = is_highscore(self.score, self.highscores)
+            if rank_idx is not None:
+                self.highscores = add_highscore(
+                    self.score, self.difficulty_rank, rescued,
+                    self.guns_destroyed, self.highscores)
+                save_highscores(self.highscores)
             if self.music:
                 self.music.stop()
             self.music_playing = False
@@ -1767,8 +1969,16 @@ class Game:
                 # Victory!
                 for civ in self.civilians:
                     civ.state = 'rescued'
-                self.score += 500
+                self.score += int(500 * self.score_multiplier)
                 self.state = GameState.VICTORY
+                # Auto-record high score on victory
+                rescued = sum(1 for c in self.civilians if c.state == 'onboard' or c.state == 'rescued')
+                rank_idx = is_highscore(self.score, self.highscores)
+                if rank_idx is not None:
+                    self.highscores = add_highscore(
+                        self.score, self.difficulty_rank, rescued,
+                        self.guns_destroyed, self.highscores)
+                    save_highscores(self.highscores)
                 if self.music:
                     self.music.stop()
                 self.music_playing = False
@@ -1852,19 +2062,24 @@ class Game:
             self._draw_title()
         elif self.state == GameState.PLAYING:
             self._draw_game()
-            draw_hud(self.screen, self.heli, self.civilians, self.score, self.font)
+            draw_hud(self.screen, self.heli, self.civilians, self.score, self.font,
+                     rank=self.difficulty_rank)
             # Helipad hint message
             if self.helipad_hint_timer > 0:
                 hint = self.font.render("Return here with all civilians to rescue them!", True, YELLOW)
                 self.screen.blit(hint, (SCREEN_WIDTH // 2 - hint.get_width() // 2, 110))
         elif self.state == GameState.VICTORY:
             self._draw_game()
-            draw_hud(self.screen, self.heli, self.civilians, self.score, self.font)
+            draw_hud(self.screen, self.heli, self.civilians, self.score, self.font,
+                     rank=self.difficulty_rank)
             self._draw_overlay("VICTORY!", "All civilians rescued!", YELLOW)
         elif self.state == GameState.GAME_OVER:
             self._draw_game()
-            draw_hud(self.screen, self.heli, self.civilians, self.score, self.font)
+            draw_hud(self.screen, self.heli, self.civilians, self.score, self.font,
+                     rank=self.difficulty_rank)
             self._draw_overlay("GAME OVER", "Press SPACE to restart", RED)
+        elif self.state == GameState.HIGH_SCORES:
+            self._draw_highscores()
 
         pygame.display.flip()
 
@@ -1927,6 +2142,7 @@ class Game:
             "W A S D  -- Move helicopter",
             "SPACE    -- Shoot bullets",
             "M        -- Drop bomb",
+            "TAB      -- High Scores",
             "",
             "Press SPACE to start",
         ]
@@ -2117,10 +2333,63 @@ class Game:
             self.screen.blit(surf, (SCREEN_WIDTH // 2 - surf.get_width() // 2, y))
             y += 24
 
-        # Restart prompt
+        # Restart prompt (different for victory vs game over)
+        if self.state == GameState.VICTORY:
+            if pygame.time.get_ticks() % 1000 < 500:
+                cont = self.font.render(f"SPACE - Continue (Rank {self.difficulty_rank + 1})", True, YELLOW)
+                self.screen.blit(cont, (SCREEN_WIDTH // 2 - cont.get_width() // 2, 390))
+                esc_text = self.small_font.render("ESC - Return to title", True, (180, 180, 180))
+                self.screen.blit(esc_text, (SCREEN_WIDTH // 2 - esc_text.get_width() // 2, 420))
+        else:
+            if pygame.time.get_ticks() % 1000 < 500:
+                restart = self.font.render("Press SPACE to continue", True, YELLOW)
+                self.screen.blit(restart, (SCREEN_WIDTH // 2 - restart.get_width() // 2, 400))
+
+    def _draw_highscores(self) -> None:
+        """Render the high score table screen.
+
+        Shows the title "HIGH SCORES" and a table with columns:
+        Rank, Score, Civilians, Guns, Rank Lvl, Date.
+        If no scores recorded, shows a 'No scores yet' message.
+        SPACE returns to title.
+        """
+        # Background
+        for y in range(0, SCREEN_HEIGHT, 4):
+            shade = max(10, 40 - y // 20)
+            pygame.draw.rect(self.screen, (shade, shade, shade + 10),
+                             (0, y, SCREEN_WIDTH, 4))
+
+        # Title
+        title = self.big_font.render("HIGH SCORES", True, YELLOW)
+        self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 30))
+
+        if not self.highscores:
+            msg = self.font.render("No scores yet!", True, WHITE)
+            self.screen.blit(msg, (SCREEN_WIDTH // 2 - msg.get_width() // 2, 200))
+        else:
+            # Column headers
+            headers = ["#", "Score", "Civ", "Guns", "Rank", "Date"]
+            col_x = [SCREEN_WIDTH // 2 - 220, SCREEN_WIDTH // 2 - 160,
+                     SCREEN_WIDTH // 2 - 60, SCREEN_WIDTH // 2 - 10,
+                     SCREEN_WIDTH // 2 + 50, SCREEN_WIDTH // 2 + 120]
+            for h, cx in zip(headers, col_x):
+                hdr = self.small_font.render(h, True, WHITE)
+                self.screen.blit(hdr, (cx, 80))
+
+            # Score rows
+            for i, entry in enumerate(self.highscores[:MAX_HIGHSCORES]):
+                y = 115 + i * 28
+                col = ORANGE if i == 0 else (200, 200, 200)
+                vals = [str(i + 1), str(entry['score']), str(entry['rescued']),
+                        str(entry['destroyed']), str(entry['rank']), entry['date']]
+                for val, cx in zip(vals, col_x):
+                    vs = self.small_font.render(val, True, col)
+                    self.screen.blit(vs, (cx, y))
+
+        # Return prompt
         if pygame.time.get_ticks() % 1000 < 500:
-            restart = self.font.render("Press SPACE to continue", True, YELLOW)
-            self.screen.blit(restart, (SCREEN_WIDTH // 2 - restart.get_width() // 2, 400))
+            ret = self.font.render("Press SPACE to return", True, YELLOW)
+            self.screen.blit(ret, (SCREEN_WIDTH // 2 - ret.get_width() // 2, 540))
 
     def run(self) -> None:
         """Main game loop: process events, update state, render frame.
