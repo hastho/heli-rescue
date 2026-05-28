@@ -1,4 +1,28 @@
-# Heli Rescue -- Requirements Document
+# Heli Rescue -- Task Specification & Benchmark
+
+This document defines a benchmark task for evaluating agentic AI coding setups.
+The goal: given this specification and an environment (prompt files, agent
+config), produce a working helicopter rescue game and compare the result against
+a reference implementation.
+
+## How to use as a benchmark
+
+1. Provide this file (TASK.md) to the target coding system as the task
+   description.
+2. Provide the environment files: `AGENTS.md` (shared rules), `WORKFLOW_STATE.md`
+   (state tracking template), and `.opencode/agents/*.md` (agent definitions).
+3. The system produces source code, tests, docs, and a commit history.
+4. Compare the result against this project's reference implementation using the
+   23 acceptance criteria in Section 4.
+
+## Reference implementation
+
+The reference is the `heli-rescue` repository at
+https://github.com/hastho/heli-rescue. The deliverable is a single-file Python
+game (`main.py`) with unit tests, CI, and documentation, plus any auxiliary
+files needed for the development workflow.
+
+---
 
 ## 1. Concept
 
@@ -189,8 +213,9 @@ YM3812/OPL2 FM synthesis register data.
   should be named constants.
 - **No dead code**: Generated FM fallback music was removed when it was never heard (VGZ files
   are always present). Keep the codebase minimal.
-- **One source of truth**: WORKFLOW_STATE.md tracks the current state, decisions, and plans.
-  AGENTS.md describes the architecture and common pitfalls.
+- **One source of truth**: WORKFLOW_STATE.md tracks the current state, decisions, and plans
+  (part of the agent workflow, not shipped to end users).
+  AGENTS.md describes the architecture and common pitfalls (also internal to the dev workflow).
 
 ### 3.4 Git Workflow
 - `main` branch is stable and tested. Never commit directly to `main`.
@@ -240,7 +265,24 @@ The game meets these tests of correctness:
 | File | Purpose |
 |------|---------|
 | `main.py` | Single source file containing all game code |
-| `AGENTS.md` | Architecture overview, code map, common pitfalls |
-| `WORKFLOW_STATE.md` | Current project state, decisions, bug history |
-| `TASK.md` | This file -- requirements and acceptance criteria |
-| `tunes/*.vgz` | Optional background music files (YM3812/OPL2 register data) |
+| `TASK.md` | This file -- benchmark task specification |
+| `README.md` | Public-facing project documentation |
+| `tests/` | Unit test suite (pytest, 70 tests) |
+| `.github/workflows/test.yml` | CI workflow |
+| `Makefile` | Development shortcuts |
+| `pyproject.toml` | Build configuration and dependencies |
+| `requirements.txt` | Pinned dependencies |
+| `.gitignore` | Git exclusion rules |
+
+### Benchmark delivery files
+
+A complete submission for this benchmark includes:
+
+- **`main.py`**: Single-file game meeting all 23 acceptance criteria
+- **`tests/`**: Unit tests for entity classes and core logic
+- **`.github/workflows/test.yml`**: CI pipeline running tests on push/PR
+- **`README.md`**: Public docs with setup, controls, and attribution
+- **`tunes/README.md`**: Instructions for obtaining music files
+- **`AGENTS.md`**: Shared development rules (for the agent workflow)
+- **`WORKFLOW_STATE.md`**: State tracking and handoff log
+- **`.opencode/agents/*.md`**: Agent definitions for the multi-agent workflow
