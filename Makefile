@@ -1,13 +1,15 @@
 .PHONY: run test lint clean
 
+PYTHON = python3
+
 run:
-	python main.py
+	$(PYTHON) main.py
 
 test:
-	python -m pytest tests/ -v
+	$(PYTHON) -m pytest tests/ -v
 
 lint:
-	@python -m ruff check main.py --fix 2>/dev/null || python -m py_compile main.py
+	@$(PYTHON) -m ruff check main.py --fix 2>/dev/null || $(PYTHON) -m py_compile main.py
 
 clean:
 	rm -rf __pycache__ .pytest_cache
