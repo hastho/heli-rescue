@@ -768,6 +768,7 @@ class Helicopter:
         self.passengers = []  # list of rescued civilian ids
         self.invincible_timer = 0  # flash after hit
         self.surface = make_helicopter_surface()
+        self.facing_right = True
         self.alive = True
 
     @property
@@ -780,16 +781,20 @@ class Helicopter:
         """Y-coordinate of the helicopter's bottom edge."""
         return self.y + self.h // 2
 
-    def update(self, keys: list[bool], terrain: list[int]) -> None:
+    def update(self, keys: list[bool], terrain: list[int], scroll_speed: int = SCROLL_NORMAL) -> None:
         """Advance helicopter one frame: handle input, movement, collisions.
 
         Reads WASD from the pressed-keys array, applies velocity, then
         resolves ground collision (snap to terrain surface), ceiling clamp
         (y >= 80), and level-boundary clamps. Decrements all cooldowns.
 
+        Sets facing_right based on horizontal direction (player input takes
+        priority; if stationary, follows auto-scroll direction).
+
         Args:
             keys: Boolean array from pygame.key.get_pressed().
             terrain: Height array from build_terrain().
+            scroll_speed: Current auto-scroll speed (default SCROLL_NORMAL).
         """
         if not self.alive:
             return
@@ -805,6 +810,14 @@ class Helicopter:
             self.vx = -HELI_SPEED
         if keys[pygame.K_d]:
             self.vx = HELI_SPEED
+
+        # Determine facing direction based on movement or scroll
+        if self.vx > 0:
+            self.facing_right = True
+        elif self.vx < 0:
+            self.facing_right = False
+        else:
+            self.facing_right = scroll_speed >= 0
 
         # Apply velocity
         self.x += self.vx
@@ -843,10 +856,12 @@ class Helicopter:
         Firepower scales with rescued civilians:
             num_bullets = 1 + (passengers // 2), clamped to [1, 5].
 
-        When num_bullets == 1, fires a single center bullet (vx=vy=10, 45-degree down-right).
+        When num_bullets == 1, fires a single center bullet. Direction depends
+        on self.facing_right: down-right when facing right, down-left when facing left.
         When num_bullets > 1, fires a symmetric fan spread across FIRE_SPREAD_DEG degrees
-        centered on 45-degree down-right. Each bullet gets its own (vx, vy) via trig so that
-        all bullets travel at the same speed but different trajectories.
+        centered on 45-degree down-right (or down-left when facing left). Each bullet
+        gets its own (vx, vy) via trig so that all bullets travel at the same speed
+        but different trajectories.
 
         Returns:
             list[Bullet]: Empty list if on cooldown, otherwise 1-5 Bullet objects.
@@ -859,11 +874,14 @@ class Helicopter:
         cx, cy = self.x, self.bottom
 
         if num == 1:
-            return [Bullet(cx, cy)]
+            if self.facing_right:
+                return [Bullet(cx, cy)]
+            else:
+                return [Bullet(cx, cy, -BULLET_SPEED, BULLET_SPEED)]
 
         spread = math.radians(FIRE_SPREAD_DEG)
         step = spread / (num - 1)
-        base_angle = math.pi / 4  # 45-degree down-right
+        base_angle = math.pi / 4 if self.facing_right else 3 * math.pi / 4
         start = base_angle - spread / 2
         # Speed magnitude matching the current vx=vy=10 baseline
         mag = math.sqrt(BULLET_SPEED * BULLET_SPEED * 2)
@@ -924,22 +942,27 @@ class Helicopter:
         # Flash when invincible
         if self.invincible_timer > 0 and (self.invincible_timer // 4) % 2 == 0:
             return
-        screen.blit(self.surface, (sx, sy))
+        surf = self.surface if self.facing_right else pygame.transform.flip(self.surface, True, False)
+        screen.blit(surf, (sx, sy))
 
 
 class Bullet:
-    """A player-fired projectile that travels diagonally down-right.
+    """A player-fired projectile that travels diagonally (down-right or down-left).
 
-    Spawned by Helicopter.shoot(). Moves at a fixed velocity (vx, vy)
-    each frame. Dies when it exits the visible area (bottom or right edge).
+    Direction depends on the helicopter's facing: right when facing right,
+    left when facing left. Spawned by Helicopter.shoot(). Moves at a fixed
+    velocity (vx, vy) each frame. Dies when it exits the visible area
+    (bottom, right edge, or left edge).
     Collision with enemy guns is handled externally in Game.update().
     """
 
     def __init__(self, x: float, y: float, vx: float | None = None, vy: float | None = None):
         """Initialise bullet at world position (x, y) with given velocity.
 
-        If vx or vy is None, defaults to BULLET_SPEED (10), giving the
-        standard 45-degree down-right trajectory for single bullets.
+        If vx or vy is None, defaults to BULLET_SPEED (10), giving a
+        45-degree down-right trajectory (standard for right-facing heli).
+        When the helicopter faces left, shoot() passes explicit negative
+        vx for down-left trajectory.
 
         Args:
             x: World x position (pixels).
@@ -960,7 +983,7 @@ class Bullet:
             return
         self.x += self.vx
         self.y += self.vy
-        if self.y > SCREEN_HEIGHT or self.x > LEVEL_WIDTH:
+        if self.y > SCREEN_HEIGHT or self.x > LEVEL_WIDTH or self.x < 0:
             self.alive = False
 
     def draw(self, screen: pygame.Surface, offset_x: float) -> None:
@@ -1638,11 +1661,11 @@ class Game:
         terrain = self.terrain
 
         # --- Update helicopter ---
-        heli.update(keys, terrain)
+        heli.update(keys, terrain, self.auto_scroll_speed)
 
         # --- Engine particles (exhaust) ---
         if heli.alive and not heli.grounded and random.random() < 0.6:
-            px = heli.x - heli.w // 2 - 3
+            px = (heli.x - heli.w // 2 - 3) if heli.facing_right else (heli.x + heli.w // 2 + 3)
             py = heli.y + heli.h // 4
             self.particles.append(Particle(
                 px, py,
